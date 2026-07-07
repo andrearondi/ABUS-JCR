@@ -5,8 +5,10 @@ expected native voxel box.
 
 Part B (data, Val): for every available case, the GT mask box round-tripped
 through iso space and mapped back scores IoU >= RESAMPLE_IOU_FLOOR against the
-native official box. This bounds the soft IoU ceiling isotropic working imposes
-(Inv. 6) and proves it never threatens the 0.3 FROC hit threshold.
+native official box. The floor is a FROC-hit SAFETY MARGIN (0.50, well above the
+0.3 hit threshold), not a fidelity target — the small-lesion quantization tail is
+characterised (not asserted) by scripts/phase1_resample_fidelity.py. This test is
+the regression tripwire: a coordinate/affine bug tanks it far below 0.50.
 """
 
 import os
@@ -54,7 +56,7 @@ def test_iso_to_native_recovers_original_native_box_within_quantization():
     # A native box, pushed to iso via the forward map, then pulled back, lands
     # within the theoretical quantization bound: nearest-iso-index rounding costs
     # up to half an iso-voxel, which in native voxels is 0.5/f (large on the
-    # heavily-downsampled depth axis f=0.146, tiny on the sweep axis f=0.95).
+    # heavily-downsampled depth axis f=0.1825 at 0.4 mm, tiny on the sweep axis).
     f = zoom_factors()
     meta = {"zoom_factors": list(f)}
     native = (100, 80, 40, 260, 300, 200)

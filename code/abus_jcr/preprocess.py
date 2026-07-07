@@ -30,8 +30,9 @@ Shape3 = Tuple[int, int, int]
 def zoom_factors(iso_spacing_mm: float = C.ISO_SPACING_MM) -> Tuple[float, float, float]:
     """Per-storage-axis zoom factor ``f[a] = SPACING_STORAGE_MM[a] / iso``.
 
-    At 0.5 mm this is ``(0.146, 0.400, 0.951348)`` — depth is downsampled hardest
-    (finest native spacing), the sweep axis barely at all.
+    At the frozen 0.4 mm this is ``(0.1825, 0.5, 1.189185)`` — depth ``d0`` is
+    downsampled hardest (finest native spacing), the sweep axis ``d2`` slightly
+    upsampled. (At 0.5 mm it was ``(0.146, 0.400, 0.951348)``.)
     """
     return tuple(C.SPACING_STORAGE_MM[a] / iso_spacing_mm for a in range(3))  # type: ignore[return-value]
 

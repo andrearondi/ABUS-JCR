@@ -22,8 +22,9 @@ def test_zoom_factors_match_spacing_ratio():
     f = zoom_factors()
     expected = tuple(C.SPACING_STORAGE_MM[a] / C.ISO_SPACING_MM for a in range(3))
     assert f == pytest.approx(expected, abs=1e-12)
-    # sanity: (0.146, 0.400, 0.951348) at 0.5 mm
-    assert f == pytest.approx((0.146, 0.400, 0.951348), abs=1e-6)
+    # sanity at the frozen 0.4 mm: (0.1825, 0.5, 1.189185)
+    assert C.ISO_SPACING_MM == 0.4
+    assert f == pytest.approx((0.1825, 0.5, 1.189185), abs=1e-6)
 
 
 def test_iso_shape_is_round_of_native_times_f():
@@ -67,6 +68,6 @@ def test_preprocess_hash_deterministic_and_sensitive():
     assert h1 == h2
     assert isinstance(h1, str) and len(h1) == 64  # sha256 hexdigest
 
-    # changing a cache-invalidating input changes the hash
-    h_other = preprocess_hash(iso_spacing_mm=0.4)
+    # changing a cache-invalidating input changes the hash (0.3 != frozen 0.4)
+    h_other = preprocess_hash(iso_spacing_mm=0.3)
     assert h_other != h1
