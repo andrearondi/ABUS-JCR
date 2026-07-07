@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abus_jcr"
+version = "0.0.0"
+description = "ABUS Joint Candidate Rescoring — Phase 0a gating checks (GT double-check, lesion audit, official-metric oracle)"
+requires-python = ">=3.10"
+# Phase-0 runtime deps only. Phase 1 supersedes this with a fully pinned env
+# (adds torch/torchvision/ultralytics/monai) and MUST keep the I/O contract test green.
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",       # 26-connectivity connected components
+    "pynrrd",      # NRRD read; provides the `nrrd` module
+    "matplotlib",  # imported by the vendored det_score.py; not otherwise used
+    "tqdm",        # imported by the vendored det_score.py
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["abus_jcr*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
