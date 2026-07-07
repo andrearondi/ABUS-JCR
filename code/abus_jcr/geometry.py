@@ -88,3 +88,21 @@ def iou_official(a: OfficialBox, b: OfficialBox) -> float:
     """3D IoU in official space — a thin delegate to the vendored ``iou_3d`` so
     Phase 3's candidate-labeling IoU is byte-identical to the scoring IoU."""
     return iou_3d(a, b)
+
+
+def iso_storage_to_native_storage(box_storage_iso: BoxStorage, meta: dict) -> BoxStorage:
+    """Map an isotropic-space storage box back to native voxel indices (Inv. 6).
+
+    Applies the recorded inverse affine per axis to the inclusive min/max
+    endpoints: ``native = (iso + 0.5) / f - 0.5``, where ``f = meta["zoom_factors"]``
+    is the per-storage-axis zoom used by :func:`abus_jcr.preprocess.resample_case`.
+    Endpoints are rounded to integer voxel indices. Phase 3 composes this with
+    :func:`storage_box_to_official` to score iso candidates against the native
+    official GT box.
+    """
+    f = tuple(float(x) for x in meta["zoom_factors"])
+    mn = box_storage_iso[0:3]
+    mx = box_storage_iso[3:6]
+    mn_nat = tuple(int(round((mn[a] + 0.5) / f[a] - 0.5)) for a in range(3))
+    mx_nat = tuple(int(round((mx[a] + 0.5) / f[a] - 0.5)) for a in range(3))
+    return (mn_nat[0], mn_nat[1], mn_nat[2], mx_nat[0], mx_nat[1], mx_nat[2])

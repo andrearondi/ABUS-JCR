@@ -54,3 +54,42 @@ KEY_FP = (0.125, 0.25, 0.5, 1, 2, 4, 8)
 # Floor separating genuine lesions from sub-voxel mask specks. Affects no GT
 # box, no model, no label — raw counts are always reported alongside.
 LESION_MIN_VOXELS = 1000
+
+# --- Phase 1: isotropic cache + slice contract ------------------------------
+# The 2.5D detection frame (Inv. 1). Storage axis d2 = elevational/sweep is the
+# stack axis; each slice is the (d0, d1) B-mode frame. d0 = depth/beam (image
+# vertical, near-field at top) => NO vertical flip. d1 = lateral (image
+# horizontal) => horizontal flip allowed (Inv. 13). Confirmed on Val overlays.
+SLICE_AXIS = 2
+IN_PLANE_ROW_AXIS = 0  # d0 = depth/beam -> image "y"/row; NO vertical flip
+IN_PLANE_COL_AXIS = 1  # d1 = lateral    -> image "x"/col; horizontal flip OK
+
+# One isotropic space, cached once (Inv. 6). 0.5 mm target: lesions are cm-scale,
+# keeps ~314-336 slices/vol, measured iso->native hit-IoU ceiling 0.89-0.97 >> 0.3.
+# Changing this invalidates the cache (part of preprocess_hash).
+ISO_SPACING_MM = 0.5
+
+# uint8 -> float32 [0,1]; identical across all three detectors. Cache-invalidating.
+INTENSITY_NORM = {"method": "scale", "divisor": 255.0}
+
+# scipy.ndimage.zoom parameters. image: linear (order 1); mask: nearest (order 0)
+# so it stays {0,1}. grid_mode + grid-constant is edge-aligned so physical extent
+# is preserved (n_out = round(n_in * f)). Cache-invalidating.
+RESAMPLE = {"image_order": 1, "mask_order": 0, "grid_mode": True, "mode": "grid-constant"}
+
+# 2.5D stack width (centre +/- 1). Maps 1:1 to pretrained 3-channel stems.
+# A *dataloading* param, NOT cache-invalidating.
+C_CHANNELS = 3
+EDGE_SLICE_POLICY = "clamp"  # replicate boundary slices by index-clamping
+
+# Keep every non-empty 2D mask component (box-set == mask-set exactly). OFF by default.
+MIN_2D_BOX_AREA = 0
+
+# k-fold for out-of-fold rescorer candidates (Inv. 10). Stratified by B/M, seeded.
+KFOLD_K = 5
+KFOLD_SEED = 0
+KFOLD_STRATIFY_BY = "label"
+
+# Soft IoU floor imposed by isotropic resampling (measured 0.886-0.960 on Val at
+# 0.5 mm). Phase 3 must not expect IoU ~ 1.0 across the resampling boundary.
+RESAMPLE_IOU_FLOOR = 0.85
