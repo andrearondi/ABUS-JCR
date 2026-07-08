@@ -103,3 +103,56 @@ KFOLD_STRATIFY_BY = "label"
 # distribution (min/median/percentiles) is characterised, not asserted, by
 # scripts/phase1_resample_fidelity.py and handed to Phase 3 as its tolerance input.
 RESAMPLE_IOU_FLOOR = 0.50
+
+# ============================================================================
+# Phase 2 — RetinaNet 2.5D detector constants (single source of truth)
+# ----------------------------------------------------------------------------
+# Two groups. (A) The fixed recipe + the pinned derivation RULE (how [2.0]'s Train
+# stats map to the data-dependent constants) — split-independent, frozen forever.
+# (B) The data-dependent constants FROZEN from the [2.0] Train probe — written here
+# as PROVISIONAL placeholders (the Val-measured ballpark) and reconciled against the
+# Train probe output BEFORE any training run: if derive_constants(Train) reproduces
+# them they stand; else they are replaced by the Train-derived values and the change
+# is recorded in RESULTS_PHASE_2.md [2.0]. No training run may precede reconciliation.
+# ============================================================================
+
+# --- Phase 2 (A): fixed recipe + the pinned derivation rule -----------------
+DET_BACKBONE            = "retinanet_resnet50_fpn_v2"     # torchvision; COCO_V1 weights
+DET_NUM_CLASSES         = 2        # torchvision convention: background(0) + lesion(1). Matches Faster R-CNN (Phase 6)
+DET_FG_LABEL            = 1        # foreground (lesion) label used in targets
+# Derivation-rule parameters (consumed by detect.det_stats.derive_constants on the [2.0] Train stats):
+DET_RULE = {
+    "min_size_round": 32,          # min_size = round_up(max Train ISO d0-frame, 32)  (near-native depth; no downscale)
+    "max_size_round": 32,          # max_size = round_up(max Train ISO d1-frame, 32)
+    "anchor_diag_lo_pct": 1,       # smallest anchor scale ~ p1 of Train lesion-box diag (iso px)
+    "anchor_diag_hi_pct": 99,      # largest anchor scale*2^(2/3) must cover p99 of diag
+    "anchor_n_levels": 5,          # P3..P7; bases geometric (ratio 2), rounded; x 3 sub-octaves at build
+    "aspect_pcts": [10, 50, 90],   # aspect_ratios = {h/w at these Train pcts} snapped to grid, U {1.0}
+    "aspect_grid": [0.2, 0.25, 0.33, 0.5, 0.75, 1.0, 1.5, 2.0],
+    "intensity_sample_slices": 4000,  # seeded sample of Train iso slices for image_mean/std (float32 [0,1])
+    "intensity_seed": 0,
+}
+# Diagnostic-dump inference knobs (NOT the Phase-3 operating point; permissive so the dump is informative)
+DET_DIAG_SCORE_THRESH   = 0.05
+DET_DIAG_NMS_THRESH     = 0.5
+DET_DIAG_DETECTIONS_PER_IMG = 300
+# Training regime (split-independent)
+DET_NEG_POS_SLICE_RATIO = 3        # background:lesion slices sampled per epoch (reshuffled, seeded)
+DET_FOLD_SEED           = 0        # single seed for the 5 k-fold candidate detectors (Inv. 10: they only make data)
+DET_FULL_SEEDS          = (0, 1, 2)# 3 seeds for the full-train deployment detectors (Inv. 14: reported mean±std)
+DET_OPTIMIZER           = {"name": "SGD", "lr": 0.01, "momentum": 0.9, "weight_decay": 1e-4}
+DET_LR_SCHEDULE         = {"warmup_iters": 500, "warmup_factor": 0.01, "kind": "cosine"}
+DET_MAX_EPOCHS          = 50
+DET_EARLYSTOP_PATIENCE  = 8        # epochs of no Val-loss improvement
+DET_BATCH_SIZE          = 8        # slices per step; A6000 48 GB, ~160x352 input
+DET_PER_SLICE_RECALL    = {"score_thresh": 0.05, "iou_thresh": 0.30}  # 2D diagnostic recall readout
+
+# --- Phase 2 (B): FROZEN FROM THE [2.0] TRAIN PROBE (provisional = Val ballpark) ---
+# PROVISIONAL until phase2_train_stats.py is run on Train and reconciled (see [2.0] / RESULTS_PHASE_2).
+# The Val ballpark below is a sanity target, NOT the decision; the Train probe is the authority.
+DET_MIN_SIZE            = 160      # ~= max Train ISO d0-frame (depth). Val: d0 == 158 (constant)
+DET_MAX_SIZE            = 352      # ~= round_up(max Train ISO d1-frame, 32). Val: d1 <= 341
+DET_IMAGE_MEAN          = 0.23     # Train iso-slice mean (float32 [0,1]); per-channel uniform. Val: 0.228
+DET_IMAGE_STD           = 0.16     # Train iso-slice std; per-channel uniform.                  Val: 0.160
+DET_ANCHOR_BASE_SIZES   = (16, 32, 64, 128, 256)   # from Train diag p1..p99. Val: diag p5=9..p95=139, max 175
+DET_ANCHOR_ASPECT_RATIOS = (0.25, 0.5, 1.0, 2.0)   # from Train h/w pcts. Val: median h/w ~= 0.24 (wide-skewed)
