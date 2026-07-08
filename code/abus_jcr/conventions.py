@@ -147,12 +147,16 @@ DET_EARLYSTOP_PATIENCE  = 8        # epochs of no Val-loss improvement
 DET_BATCH_SIZE          = 8        # slices per step; A6000 48 GB, ~160x352 input
 DET_PER_SLICE_RECALL    = {"score_thresh": 0.05, "iou_thresh": 0.30}  # 2D diagnostic recall readout
 
-# --- Phase 2 (B): FROZEN FROM THE [2.0] TRAIN PROBE (provisional = Val ballpark) ---
-# PROVISIONAL until phase2_train_stats.py is run on Train and reconciled (see [2.0] / RESULTS_PHASE_2).
-# The Val ballpark below is a sanity target, NOT the decision; the Train probe is the authority.
-DET_MIN_SIZE            = 160      # ~= max Train ISO d0-frame (depth). Val: d0 == 158 (constant)
-DET_MAX_SIZE            = 352      # ~= round_up(max Train ISO d1-frame, 32). Val: d1 <= 341
+# --- Phase 2 (B): FROZEN FROM THE [2.0] TRAIN PROBE (reconciled 2026-07-08) ---
+# RECONCILED against phase2_train_stats.py on the 100-case Train split (RESULTS_PHASE_2 [2.0b]).
+# These ARE the Train-derived design constants; the earlier Val ballpark survives in comments only.
+# Reconciliation: min_size/max_size/image_mean/anchor_base_sizes matched the provisional; image_std
+# moved 0.16->0.1658 (Val guess -> exact Train stat, was within tolerance); anchor_aspect_ratios
+# moved (0.25,0.5,1.0,2.0)->(0.2,0.25,0.5,1.0) (Val guess wrongly included tall 2.0 and dropped the
+# wide 0.2 — Train h/w p10/p50/p90=0.161/0.250/0.442 is wide-skewed).
+DET_MIN_SIZE            = 160      # round_up(max Train ISO d0-frame=158, 32). Val ballpark: d0==158
+DET_MAX_SIZE            = 352      # round_up(max Train ISO d1-frame=341, 32). Val ballpark: d1<=341
 DET_IMAGE_MEAN          = 0.23     # Train iso-slice mean (float32 [0,1]); per-channel uniform. Val: 0.228
-DET_IMAGE_STD           = 0.16     # Train iso-slice std; per-channel uniform.                  Val: 0.160
-DET_ANCHOR_BASE_SIZES   = (16, 32, 64, 128, 256)   # from Train diag p1..p99. Val: diag p5=9..p95=139, max 175
-DET_ANCHOR_ASPECT_RATIOS = (0.25, 0.5, 1.0, 2.0)   # from Train h/w pcts. Val: median h/w ~= 0.24 (wide-skewed)
+DET_IMAGE_STD           = 0.1658   # Train iso-slice std (n=4000 seeded slices); per-channel uniform. Val: 0.160
+DET_ANCHOR_BASE_SIZES   = (16, 32, 64, 128, 256)   # Train diag p1..p99 via the grow-to-cover rule. Val: p5=9..p95=139
+DET_ANCHOR_ASPECT_RATIOS = (0.2, 0.25, 0.5, 1.0)   # Train h/w p10/p50/p90=0.161/0.250/0.442 snapped +{1.0}
