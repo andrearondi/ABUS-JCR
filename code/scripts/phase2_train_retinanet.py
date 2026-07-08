@@ -19,7 +19,7 @@ import argparse
 import sys
 
 from abus_jcr.detect.train import train_detector
-from _phase2_common import add_phase2_paths, cache_root, load_manifest, load_slice_boxes
+from _phase2_common import add_phase2_paths, assert_device, cache_root, load_manifest, load_slice_boxes
 
 
 def main() -> int:
@@ -36,6 +36,7 @@ def main() -> int:
         parser.error("--regime fold requires --fold")
     if args.regime == "full" and args.seed is None:
         parser.error("--regime full requires --seed")
+    assert_device(args.device)
     fold_or_seed = args.fold if args.regime == "fold" else args.seed
 
     manifest = load_manifest(args)

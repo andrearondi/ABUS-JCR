@@ -26,7 +26,7 @@ from abus_jcr.detect import schema as S
 from abus_jcr.detect.infer import run_detector_on_volume
 from abus_jcr.detect.retinanet import load_checkpoint
 from abus_jcr.detect.slice_det_dataset import boxes_halfopen_for
-from _phase2_common import add_phase2_paths, cache_root, load_manifest, load_slice_boxes
+from _phase2_common import add_phase2_paths, assert_device, cache_root, load_manifest, load_slice_boxes
 
 
 def iou_2d(a: np.ndarray, b: np.ndarray) -> float:
@@ -100,6 +100,7 @@ def main() -> int:
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
+    assert_device(args.device)
     manifest = load_manifest(args)
     sb_val = load_slice_boxes(args, "Validation")
     val_ids = args.volumes or sorted(int(v) for v in manifest[manifest["split"] == "val"]["volume_id"])

@@ -17,7 +17,7 @@ from pathlib import Path
 from abus_jcr import conventions as C
 from abus_jcr.detect import cost as CST
 from abus_jcr.detect.retinanet import build_retinanet, load_checkpoint
-from _phase2_common import add_phase2_paths, cache_root, load_manifest
+from _phase2_common import add_phase2_paths, assert_device, cache_root, load_manifest
 
 
 def _mean_slices_per_volume(args) -> float:
@@ -42,6 +42,7 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=10)
     args = parser.parse_args()
 
+    assert_device(args.device)
     if args.checkpoint:
         model, _ = load_checkpoint(args.checkpoint)
     else:

@@ -27,6 +27,33 @@ def cache_root(args) -> Path:
     return Path(args.phase1_out) / "cache"
 
 
+def assert_device(device: str) -> None:
+    """Fail loudly if a CUDA device is requested but unavailable (Inv.: A6000 runs).
+
+    Prevents a CPU-only node (e.g. a JupyterHub pod with no NVIDIA driver) from
+    silently loading the whole dataset/model before crashing — the training/cost/
+    dump steps MUST run on the GPU host, not a login/notebook pod.
+    """
+    if not str(device).startswith("cuda"):
+        return
+    try:
+        import torch
+    except ImportError as e:
+        raise SystemExit(f"--device {device} requested but torch is not installed ({e}). "
+                         "Activate the abus-jcr env on the GPU host.")
+
+    if not torch.cuda.is_available():
+        raise SystemExit(
+            f"--device {device} requested but torch reports no CUDA GPU "
+            f"(is_available=False, device_count={torch.cuda.device_count()}).\n"
+            "You are almost certainly on a CPU-only node (check `nvidia-smi`). "
+            "Move to the A6000 GPU host, `conda activate "
+            "/home/maia-user/Andre2/envs/abus-jcr`, verify "
+            "`python -c \"import torch; print(torch.cuda.is_available())\"` prints True, "
+            "then re-run. (The [2.0b] Train-stats probe is CPU-only and can run anywhere.)"
+        )
+
+
 def load_manifest(args) -> pd.DataFrame:
     return pd.read_csv(Path(args.phase1_out) / "manifest.csv")
 
