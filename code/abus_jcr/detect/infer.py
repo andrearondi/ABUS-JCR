@@ -18,6 +18,21 @@ from ..slice_dataset import get_stack
 from . import schema as S
 
 
+def drop_degenerate_boxes(boxes: np.ndarray, scores: np.ndarray):
+    """Drop zero-area / inverted boxes (``x2<=x1`` or ``y2<=y1``) -> filtered pair.
+
+    torchvision's postprocessing clips boxes to the image border and, at a
+    permissive score threshold, can emit degenerate boxes on the edge. Those carry
+    no localisation and must not enter the strict schema (Phase 3 needs ``x1<x2``).
+    """
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+    if len(boxes) == 0:
+        return boxes, scores
+    keep = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+    return boxes[keep], scores[keep]
+
+
 def run_detector_on_volume(
     model,
     cache_root,
@@ -58,6 +73,7 @@ def run_detector_on_volume(
             for z, out in zip(zs, outs):
                 boxes = out["boxes"].detach().cpu().numpy()
                 scores = out["scores"].detach().cpu().numpy()
+                boxes, scores = drop_degenerate_boxes(boxes, scores)  # edge-clipped zero-area boxes
                 for (x1, y1, x2, y2), sc in zip(boxes, scores):
                     rows.append({
                         "volume_id": int(volume_id), "slice_z": int(z),
