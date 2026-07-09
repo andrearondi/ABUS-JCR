@@ -99,6 +99,7 @@ def main() -> int:
     hits, total, recall = DG.gt_recall(det_all, sb_val, val_ids, score_thr, iou_thr)
     rep = DG.recall_breakdown(det_all, sb_val, val_ids, score_thresh=score_thr,
                               iou_threshs=(0.1, 0.2, 0.3))
+    pv = DG.per_volume_recall(det_all, sb_val, val_ids, score_thresh=score_thr, iou_thresh=iou_thr)
 
     fig_dir = Path(args.out_root) / "figures"
     overlays = _render_overlays(croot, args.overlay_volume, det_all, sb_val, fig_dir, args.overlay_slices)
@@ -110,6 +111,15 @@ def main() -> int:
     print(f"per-slice 2D recall    = {hits}/{total} = {recall:.4f} "
           f"(score>={score_thr}, IoU>{iou_thr})")
     print("  ^ diagnostic foreshadowing the 3D recall ceiling; NOT the Phase-3 operating point.\n")
+    hsc = sorted(pv["hit_slice_counts"])
+    median_hit_slices = hsc[len(hsc) // 2] if hsc else 0
+    print(f"per-LESION recall      = {pv['vols_with_hit']}/{pv['n_vols']} = {pv['recall']:.4f} "
+          f"(volume hit on >=1 slice at IoU>{iou_thr}; 2D same-slice, NO linking)")
+    print("  ^ correlated proxy for the 3D ceiling, not a bound; linked 3D recall is Phase 3.")
+    print(f"  hit-slices per lesion: median={median_hit_slices}, min={hsc[0] if hsc else 0}, "
+          f"max={hsc[-1] if hsc else 0}  (>1 => plausibly 3D-linkable)")
+    n_zero = sum(1 for c in pv["hit_slice_counts"] if c == 0)
+    print(f"  lesions never hit (0 slices) = {n_zero}/{pv['n_vols']}\n")
     print("-- diagnostics (why is recall what it is?) --------------------------------")
     print(f"lesion-slice fire-rate = {fr['fired']}/{fr['lesion_slices']} = {fr['rate']:.4f} "
           f"(>=1 detection on the slice, IoU-agnostic)")

@@ -58,6 +58,23 @@ def test_lesion_slice_fire_rate():
     assert (fired, total) == (1, 2) and rate == 0.5
 
 
+def test_per_volume_recall_counts_lesions_not_boxes():
+    # vol 1: GT hit on 2 slices; vol 2: GT present but never hit
+    gt = _gt([
+        {"volume_id": 1, "slice_z": 3, "r0": 0, "c0": 0, "r1": 3, "c1": 3, "component_id": 0},
+        {"volume_id": 1, "slice_z": 4, "r0": 0, "c0": 0, "r1": 3, "c1": 3, "component_id": 0},
+        {"volume_id": 2, "slice_z": 7, "r0": 0, "c0": 0, "r1": 3, "c1": 3, "component_id": 0},
+    ])
+    det = _det([
+        {"volume_id": 1, "slice_z": 3, "x1": 0, "y1": 0, "x2": 4, "y2": 4, "score": 0.9},   # hit
+        {"volume_id": 1, "slice_z": 4, "x1": 0, "y1": 0, "x2": 4, "y2": 4, "score": 0.9},   # hit
+        {"volume_id": 2, "slice_z": 7, "x1": 50, "y1": 50, "x2": 54, "y2": 54, "score": 0.9},  # miss
+    ])
+    rep = DG.per_volume_recall(det, gt, [1, 2], score_thresh=0.05, iou_thresh=0.3)
+    assert rep["vols_with_hit"] == 1 and rep["n_vols"] == 2 and rep["recall"] == 0.5
+    assert sorted(rep["hit_slice_counts"]) == [0, 2]  # vol2 -> 0 hit slices, vol1 -> 2
+
+
 def test_breakdown_size_and_iou_sweep():
     # one small GT (diag ~ hypot(2,2)=2.8) recalled loosely, one large (diag ~ hypot(40,40)=56.6) recalled tightly
     gt = _gt([

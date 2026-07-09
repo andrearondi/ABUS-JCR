@@ -82,6 +82,48 @@ def lesion_slice_fire_rate(
     return fired, total, (fired / total if total else float("nan"))
 
 
+def per_volume_recall(
+    det_df: pd.DataFrame, gt_df: pd.DataFrame, volume_ids: Sequence[int],
+    score_thresh: float = 0.05, iou_thresh: float = 0.30,
+) -> Dict:
+    """Per-LESION recall: fraction of volumes whose GT is hit on >=1 slice at ``IoU > iou_thresh``.
+
+    **No linking is performed** — this is a pure 2D, *same-slice* GT↔detection IoU
+    test OR-ed across each volume's slices (linking is Phase 3, frozen once per
+    Inv. 4). The dataset is single-lesion-dominant (Phase 0: 99/100), so per-volume
+    ≈ per-lesion.
+
+    It is a **correlated proxy** for the Phase-3 3D recall ceiling, *not a strict
+    bound*: it can overcount (a 1-slice 2D hit rarely survives 3D-tube IoU>0.3) and
+    can undercount (loose per-slice boxes below this threshold may still link into a
+    3D box that clears 3D IoU>0.3). ``hit_slice_counts`` (distinct hit slices per
+    volume) gauges 3D linkability — a lesion hit on only one slice is a weak 3D
+    candidate. The definitive number is Phase 3's linked 3D recall (Inv. 3, 8).
+    """
+    hit_slice_counts: List[int] = []
+    vols_with_hit = 0
+    for vid in volume_ids:
+        gv = gt_df[gt_df["volume_id"] == vid]
+        dv = det_df[(det_df["volume_id"] == vid) & (det_df["score"] >= score_thresh)]
+        hit_slices = set()
+        for z in sorted(gv["slice_z"].unique()):
+            gts = boxes_halfopen_for(gt_df, vid, int(z))
+            dets = dv[dv["slice_z"] == z][["x1", "y1", "x2", "y2"]].to_numpy(dtype=float)
+            if any(max((iou_2d(g, d) for d in dets), default=0.0) > iou_thresh for g in gts):
+                hit_slices.add(int(z))
+        if hit_slices:
+            vols_with_hit += 1
+        hit_slice_counts.append(len(hit_slices))
+    n = len(list(volume_ids))
+    return {
+        "vols_with_hit": vols_with_hit,
+        "n_vols": n,
+        "recall": (vols_with_hit / n if n else float("nan")),
+        "iou_thresh": iou_thresh,
+        "hit_slice_counts": hit_slice_counts,
+    }
+
+
 def recall_breakdown(
     det_df: pd.DataFrame, gt_df: pd.DataFrame, volume_ids: Sequence[int],
     score_thresh: float = 0.05,
