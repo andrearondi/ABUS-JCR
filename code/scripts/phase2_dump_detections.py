@@ -22,40 +22,11 @@ import numpy as np
 
 from abus_jcr import cache as K
 from abus_jcr import conventions as C
+from abus_jcr.detect import diagnostics as DG
 from abus_jcr.detect import schema as S
 from abus_jcr.detect.infer import run_detector_on_volume
 from abus_jcr.detect.retinanet import load_checkpoint
-from abus_jcr.detect.slice_det_dataset import boxes_halfopen_for
 from _phase2_common import add_phase2_paths, assert_device, cache_root, load_manifest, load_slice_boxes
-
-
-def iou_2d(a: np.ndarray, b: np.ndarray) -> float:
-    """2D IoU of two half-open boxes ``(x1, y1, x2, y2)``."""
-    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
-    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
-    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-    inter = iw * ih
-    area_a = (a[2] - a[0]) * (a[3] - a[1])
-    area_b = (b[2] - b[0]) * (b[3] - b[1])
-    union = area_a + area_b - inter
-    return float(inter / union) if union > 0 else 0.0
-
-
-def per_slice_recall(det_df, slice_boxes_df, volume_ids, score_thresh, iou_thresh):
-    """Fraction of GT boxes (over ``volume_ids``) recalled by some detection on the same slice."""
-    hits, total = 0, 0
-    for vid in volume_ids:
-        gt_v = slice_boxes_df[slice_boxes_df["volume_id"] == vid]
-        for z in sorted(gt_v["slice_z"].unique()):
-            gts = boxes_halfopen_for(slice_boxes_df, vid, int(z))
-            dets = det_df[(det_df["volume_id"] == vid) & (det_df["slice_z"] == z)
-                          & (det_df["score"] >= score_thresh)]
-            dboxes = dets[["x1", "y1", "x2", "y2"]].to_numpy(dtype=float)
-            for g in gts:
-                total += 1
-                if any(iou_2d(g, d) > iou_thresh for d in dboxes):
-                    hits += 1
-    return hits, total, (hits / total if total else float("nan"))
 
 
 def _render_overlays(cache_root_p, vid, det_df, slice_boxes_df, out_dir, n_slices):
@@ -123,19 +94,32 @@ def main() -> int:
         all_dets.append(df)
     det_all = pd.concat(all_dets, ignore_index=True) if all_dets else S.empty_detections()
 
-    hits, total, recall = per_slice_recall(
-        det_all, sb_val, val_ids,
-        C.DET_PER_SLICE_RECALL["score_thresh"], C.DET_PER_SLICE_RECALL["iou_thresh"])
+    score_thr = C.DET_PER_SLICE_RECALL["score_thresh"]
+    iou_thr = C.DET_PER_SLICE_RECALL["iou_thresh"]
+    hits, total, recall = DG.gt_recall(det_all, sb_val, val_ids, score_thr, iou_thr)
+    rep = DG.recall_breakdown(det_all, sb_val, val_ids, score_thresh=score_thr,
+                              iou_threshs=(0.1, 0.2, 0.3))
 
     fig_dir = Path(args.out_root) / "figures"
     overlays = _render_overlays(croot, args.overlay_volume, det_all, sb_val, fig_dir, args.overlay_slices)
 
+    fr = rep["fire_rate"]
     print(f"# [2.x] Detection dump (checkpoint={Path(args.checkpoint).name}, best_epoch={cfg.get('best_epoch')})\n")
     print(f"val volumes scored     = {len(val_ids)}")
     print(f"total detections       = {len(det_all)}")
     print(f"per-slice 2D recall    = {hits}/{total} = {recall:.4f} "
-          f"(score>={C.DET_PER_SLICE_RECALL['score_thresh']}, IoU>{C.DET_PER_SLICE_RECALL['iou_thresh']})")
-    print("  ^ diagnostic foreshadowing the 3D recall ceiling; NOT the Phase-3 operating point.")
+          f"(score>={score_thr}, IoU>{iou_thr})")
+    print("  ^ diagnostic foreshadowing the 3D recall ceiling; NOT the Phase-3 operating point.\n")
+    print("-- diagnostics (why is recall what it is?) --------------------------------")
+    print(f"lesion-slice fire-rate = {fr['fired']}/{fr['lesion_slices']} = {fr['rate']:.4f} "
+          f"(>=1 detection on the slice, IoU-agnostic)")
+    print("recall vs IoU threshold (localisation tightness):")
+    for thr in (0.1, 0.2, 0.3):
+        print(f"    IoU>{thr:<4} : {rep['by_iou'][thr]:.4f}")
+    print("recall vs GT box size (diag px; small = specks, large = real lesions) @ IoU>0.3:")
+    for label, b in rep["by_size"].items():
+        print(f"    diag {label:<10} n={b['n']:<5} recall={b['recall']:.4f}")
+    print("---------------------------------------------------------------------------")
     print(f"overlays               = {len(overlays)} PNGs under {fig_dir}")
     for p in overlays:
         print(f"  {p}")
