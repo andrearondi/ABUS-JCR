@@ -66,8 +66,12 @@ def main() -> int:
     parser.add_argument("--checkpoint", required=True, help="full-train checkpoint (e.g. seed 0)")
     parser.add_argument("--volumes", type=int, nargs="+", default=None,
                         help="Val volumes for recall (default: all val)")
-    parser.add_argument("--overlay-volume", type=int, default=100)
+    parser.add_argument("--overlay-volume", type=int, nargs="+", default=[100],
+                        help="one or more volumes to render overlays for (default: 100)")
     parser.add_argument("--overlay-slices", type=int, default=6)
+    parser.add_argument("--score-thresh", type=float, default=C.DET_DIAG_SCORE_THRESH,
+                        help="diagnostic score threshold for inference + recall (default DET_DIAG_SCORE_THRESH); "
+                             "lower it (e.g. 0.01) to probe whether missed lesions are recoverable")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -88,13 +92,13 @@ def main() -> int:
     for vid in val_ids:
         df = run_detector_on_volume(
             model, croot, vid,
-            score_thresh=C.DET_DIAG_SCORE_THRESH, nms_thresh=C.DET_DIAG_NMS_THRESH,
+            score_thresh=args.score_thresh, nms_thresh=C.DET_DIAG_NMS_THRESH,
             detections_per_img=C.DET_DIAG_DETECTIONS_PER_IMG, device=args.device)
         S.write_detections(df, det_dir / f"detections_val{vid}")
         all_dets.append(df)
     det_all = pd.concat(all_dets, ignore_index=True) if all_dets else S.empty_detections()
 
-    score_thr = C.DET_PER_SLICE_RECALL["score_thresh"]
+    score_thr = args.score_thresh
     iou_thr = C.DET_PER_SLICE_RECALL["iou_thresh"]
     hits, total, recall = DG.gt_recall(det_all, sb_val, val_ids, score_thr, iou_thr)
     rep = DG.recall_breakdown(det_all, sb_val, val_ids, score_thresh=score_thr,
@@ -103,7 +107,9 @@ def main() -> int:
     missed = DG.missed_lesion_detail(det_all, sb_val, val_ids, score_thresh=score_thr, iou_thresh=iou_thr)
 
     fig_dir = Path(args.out_root) / "figures"
-    overlays = _render_overlays(croot, args.overlay_volume, det_all, sb_val, fig_dir, args.overlay_slices)
+    overlays = []
+    for ov in args.overlay_volume:
+        overlays += _render_overlays(croot, ov, det_all, sb_val, fig_dir, args.overlay_slices)
 
     fr = rep["fire_rate"]
     print(f"# [2.x] Detection dump (checkpoint={Path(args.checkpoint).name}, best_epoch={cfg.get('best_epoch')})\n")
