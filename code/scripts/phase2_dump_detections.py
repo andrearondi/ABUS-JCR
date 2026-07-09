@@ -100,6 +100,7 @@ def main() -> int:
     rep = DG.recall_breakdown(det_all, sb_val, val_ids, score_thresh=score_thr,
                               iou_threshs=(0.1, 0.2, 0.3))
     pv = DG.per_volume_recall(det_all, sb_val, val_ids, score_thresh=score_thr, iou_thresh=iou_thr)
+    missed = DG.missed_lesion_detail(det_all, sb_val, val_ids, score_thresh=score_thr, iou_thresh=iou_thr)
 
     fig_dir = Path(args.out_root) / "figures"
     overlays = _render_overlays(croot, args.overlay_volume, det_all, sb_val, fig_dir, args.overlay_slices)
@@ -119,7 +120,13 @@ def main() -> int:
     print(f"  hit-slices per lesion: median={median_hit_slices}, min={hsc[0] if hsc else 0}, "
           f"max={hsc[-1] if hsc else 0}  (>1 => plausibly 3D-linkable)")
     n_zero = sum(1 for c in pv["hit_slice_counts"] if c == 0)
-    print(f"  lesions never hit (0 slices) = {n_zero}/{pv['n_vols']}\n")
+    print(f"  lesions never hit (0 slices) = {n_zero}/{pv['n_vols']}")
+    if missed:
+        print("  missed lesions (why the ceiling? small diag => intrinsic; best_iou~0.25 => recoverable):")
+        for m in sorted(missed, key=lambda x: x["max_gt_diag"]):
+            print(f"    vol {m['volume_id']:<4} n_gt={m['n_gt_boxes']:<4} max_diag={m['max_gt_diag']:6.1f}px "
+                  f"best_iou={m['best_iou']:.3f} fired_on={m['fired_frac']:.2f} of GT slices")
+    print()
     print("-- diagnostics (why is recall what it is?) --------------------------------")
     print(f"lesion-slice fire-rate = {fr['fired']}/{fr['lesion_slices']} = {fr['rate']:.4f} "
           f"(>=1 detection on the slice, IoU-agnostic)")

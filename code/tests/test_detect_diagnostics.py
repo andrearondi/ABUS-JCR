@@ -75,6 +75,26 @@ def test_per_volume_recall_counts_lesions_not_boxes():
     assert sorted(rep["hit_slice_counts"]) == [0, 2]  # vol2 -> 0 hit slices, vol1 -> 2
 
 
+def test_missed_lesion_detail_characterises_zero_hit_volumes():
+    # vol 1: hit (near-perfect); vol 2: missed, but a loose box gives best_iou in (0,0.3)
+    gt = _gt([
+        {"volume_id": 1, "slice_z": 3, "r0": 0, "c0": 0, "r1": 3, "c1": 3, "component_id": 0},
+        {"volume_id": 2, "slice_z": 7, "r0": 0, "c0": 0, "r1": 3, "c1": 3, "component_id": 0},  # halfopen (0,0,4,4)
+    ])
+    det = _det([
+        {"volume_id": 1, "slice_z": 3, "x1": 0, "y1": 0, "x2": 4, "y2": 4, "score": 0.9},   # hit
+        {"volume_id": 2, "slice_z": 7, "x1": 2, "y1": 2, "x2": 6, "y2": 6, "score": 0.9},   # loose: IoU=4/28~0.14
+    ])
+    missed = DG.missed_lesion_detail(det, gt, [1, 2], score_thresh=0.05, iou_thresh=0.3)
+    # only vol 2 is returned (0 hit-slices)
+    assert [m["volume_id"] for m in missed] == [2]
+    m = missed[0]
+    assert m["n_gt_boxes"] == 1
+    assert abs(m["max_gt_diag"] - np.hypot(4, 4)) < 1e-6
+    assert 0.0 < m["best_iou"] < 0.3          # loose box -> recoverable, not silent
+    assert m["fired_frac"] == 1.0             # detector did fire on the GT slice
+
+
 def test_breakdown_size_and_iou_sweep():
     # one small GT (diag ~ hypot(2,2)=2.8) recalled loosely, one large (diag ~ hypot(40,40)=56.6) recalled tightly
     gt = _gt([

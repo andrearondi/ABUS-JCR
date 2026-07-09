@@ -124,6 +124,46 @@ def per_volume_recall(
     }
 
 
+def missed_lesion_detail(
+    det_df: pd.DataFrame, gt_df: pd.DataFrame, volume_ids: Sequence[int],
+    score_thresh: float = 0.05, iou_thresh: float = 0.30,
+) -> List[Dict]:
+    """Characterise the volumes with **0 hit-slices** — the recall-ceiling limiters.
+
+    For each such volume returns ``{volume_id, n_gt_boxes, max_gt_diag, best_iou,
+    fired_frac}`` where ``best_iou`` is the max 2D IoU any same-slice detection
+    achieved against any of its GT boxes (0 => detector produced nothing
+    overlapping; ~0.25 => loose boxes just under the bar, i.e. recoverable) and
+    ``fired_frac`` is the fraction of the lesion's GT slices carrying >=1
+    detection. Small ``max_gt_diag`` => intrinsic small-lesion tail.
+    """
+    out: List[Dict] = []
+    for vid in volume_ids:
+        gv = gt_df[gt_df["volume_id"] == vid]
+        dv = det_df[(det_df["volume_id"] == vid) & (det_df["score"] >= score_thresh)]
+        det_slices = set(dv["slice_z"].tolist())
+        gt_slices = sorted(int(z) for z in gv["slice_z"].unique())
+        best_iou, n_gt, max_diag, fired = 0.0, 0, 0.0, 0
+        for z in gt_slices:
+            gts = boxes_halfopen_for(gt_df, vid, int(z))
+            dets = dv[dv["slice_z"] == z][["x1", "y1", "x2", "y2"]].to_numpy(dtype=float)
+            if z in det_slices:
+                fired += 1
+            for g in gts:
+                n_gt += 1
+                max_diag = max(max_diag, float(np.hypot(g[2] - g[0], g[3] - g[1])))
+                best_iou = max(best_iou, max((iou_2d(g, d) for d in dets), default=0.0))
+        if best_iou <= iou_thresh:  # 0 hit-slices
+            out.append({
+                "volume_id": int(vid),
+                "n_gt_boxes": n_gt,
+                "max_gt_diag": max_diag,
+                "best_iou": best_iou,
+                "fired_frac": (fired / len(gt_slices) if gt_slices else float("nan")),
+            })
+    return out
+
+
 def recall_breakdown(
     det_df: pd.DataFrame, gt_df: pd.DataFrame, volume_ids: Sequence[int],
     score_thresh: float = 0.05,
