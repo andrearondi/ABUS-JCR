@@ -29,7 +29,21 @@ from abus_jcr.detect.retinanet import load_checkpoint
 from _phase2_common import add_phase2_paths, assert_device, cache_root, load_manifest, load_slice_boxes
 
 
+def _rect(ax, box, color, lw, zorder):
+    import matplotlib.pyplot as plt
+
+    ax.add_patch(plt.Rectangle((box[0], box[1]), box[2] - box[0], box[3] - box[1],
+                               fill=False, edgecolor=color, linewidth=lw, zorder=zorder))
+
+
 def _render_overlays(cache_root_p, vid, det_df, slice_boxes_df, out_dir, n_slices):
+    """Overlay per lesion slice. GT = tight bbox around the 2D mask (green).
+
+    Colour key: all detections red; the 5 most-confident yellow; the single
+    best-IoU detection cyan, drawn last (topmost, uncovered). The caption shows
+    the best IoU + that box's confidence; a right-side panel lists the 5
+    most-confident detections with their IoU vs the GT bbox.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -44,16 +58,53 @@ def _render_overlays(cache_root_p, vid, det_df, slice_boxes_df, out_dir, n_slice
         stack = get_stack(cache_root_p, vid, int(z))
         frame = stack[C.C_CHANNELS // 2]  # centre slice
         msl = np.take(mask, int(z), axis=C.SLICE_AXIS)
-        fig, ax = plt.subplots(figsize=(6, 4))
+        gt_box = DG.tight_bbox_from_mask(msl)  # tight bbox around the 2D GT mask
+
+        dets = det_df[(det_df["volume_id"] == vid) & (det_df["slice_z"] == z)]
+        boxes = dets[["x1", "y1", "x2", "y2"]].to_numpy(dtype=float)
+        scores = dets["score"].to_numpy(dtype=float)
+        ann = DG.overlay_annotations(boxes, scores, gt_box, top_k=5)
+        ious, best_idx, top_idx = ann["ious"], ann["best_idx"], ann["top_idx"]
+        top_set = set(top_idx)
+
+        fig, ax = plt.subplots(figsize=(7.5, 4))
         ax.imshow(frame, cmap="gray", origin="upper")  # d0 depth vertical, d1 lateral horizontal
         if msl.any():
-            ax.contour(msl, levels=[0.5], colors="lime", linewidths=1.0)  # mask contour (Inv. figure rule)
-        dets = det_df[(det_df["volume_id"] == vid) & (det_df["slice_z"] == z)]
-        for _, r in dets.iterrows():
-            ax.add_patch(plt.Rectangle((r.x1, r.y1), r.x2 - r.x1, r.y2 - r.y1,
-                                       fill=False, edgecolor="red", linewidth=0.8))
-        ax.set_title(f"vol {vid} z={z}: {len(dets)} det")
+            ax.contour(msl, levels=[0.5], colors="lime", linewidths=1.0, zorder=5)  # mask contour
+        if gt_box is not None:
+            _rect(ax, gt_box, "lime", 1.0, zorder=5)  # tight GT bbox (dashed handled below)
+            ax.patches[-1].set_linestyle("--")
+
+        # layer order: red (others) < yellow (top-5) < cyan (best, topmost)
+        for i in range(len(boxes)):
+            if i == best_idx or i in top_set:
+                continue
+            _rect(ax, boxes[i], "red", 0.6, zorder=2)
+        for i in top_idx:
+            if i == best_idx:
+                continue
+            _rect(ax, boxes[i], "yellow", 1.3, zorder=4)
+        if best_idx >= 0:
+            _rect(ax, boxes[best_idx], "cyan", 2.0, zorder=6)
+
+        if best_idx >= 0:
+            ax.set_title(f"vol {vid} z={z}: {len(boxes)} det | best IoU={ious[best_idx]:.3f} "
+                         f"(conf={scores[best_idx]:.3f})", fontsize=9)
+        else:
+            ax.set_title(f"vol {vid} z={z}: {len(boxes)} det (no GT/det)", fontsize=9)
         ax.axis("off")
+
+        # right-side panel: 5 most-confident detections, conf + IoU vs GT bbox
+        lines = ["top-5 by conf (yellow;", "  cyan = best IoU):"]
+        for rank, i in enumerate(top_idx, 1):
+            tag = " <best" if i == best_idx else ""
+            lines.append(f"#{rank} conf={scores[i]:.3f} IoU={ious[i]:.3f}{tag}")
+        if not top_idx:
+            lines.append("(no detections)")
+        ax.text(1.02, 0.98, "\n".join(lines), transform=ax.transAxes, va="top", ha="left",
+                fontsize=8, family="monospace",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.85))
+
         p = out_dir / f"overlay_vol{vid}_z{int(z):03d}.png"
         fig.savefig(p, dpi=120, bbox_inches="tight"); plt.close(fig)
         paths.append(p)

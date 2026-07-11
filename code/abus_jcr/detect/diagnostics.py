@@ -10,7 +10,7 @@ ceiling — never an operating point (Inv. 2).
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,42 @@ def iou_2d(a, b) -> float:
     inter = iw * ih
     union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
     return float(inter / union) if union > 0 else 0.0
+
+
+def tight_bbox_from_mask(mask_slice) -> Optional[Tuple[float, float, float, float]]:
+    """Single tight half-open bbox ``(x1, y1, x2, y2)`` around **all** set pixels of a 2D mask slice.
+
+    ``x = d1`` (col), ``y = d0`` (row), matching the schema. Unions every component
+    into one enclosing box (the "GT box built around the 2D mask" used by the
+    overlay visualisation). Returns ``None`` for an empty mask.
+    """
+    m = np.asarray(mask_slice) > 0
+    ys, xs = np.where(m)
+    if ys.size == 0:
+        return None
+    return (float(xs.min()), float(ys.min()), float(xs.max() + 1.0), float(ys.max() + 1.0))
+
+
+def overlay_annotations(boxes, scores, gt_box, top_k: int = 5) -> Dict:
+    """IoU of each detection vs ``gt_box`` + the best-IoU index + the top-k-by-score indices.
+
+    Returns ``{ious, best_idx, top_idx}``. ``best_idx`` is the detection with the
+    highest 2D IoU against ``gt_box`` (``-1`` if there are no detections or no GT).
+    ``top_idx`` is the (stable) score-descending index list, truncated to ``top_k``.
+    """
+    boxes = np.asarray(boxes, dtype=float).reshape(-1, 4)
+    scores = np.asarray(scores, dtype=float).reshape(-1)
+    n = len(boxes)
+    if n == 0:
+        return {"ious": np.zeros(0), "best_idx": -1, "top_idx": []}
+    if gt_box is None:
+        ious = np.zeros(n)
+        best_idx = -1
+    else:
+        ious = np.array([iou_2d(gt_box, b) for b in boxes])
+        best_idx = int(np.argmax(ious))
+    top_idx = [int(i) for i in np.argsort(-scores, kind="stable")[:top_k]]
+    return {"ious": ious, "best_idx": best_idx, "top_idx": top_idx}
 
 
 def gt_matches(

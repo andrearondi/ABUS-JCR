@@ -58,6 +58,49 @@ def test_lesion_slice_fire_rate():
     assert (fired, total) == (1, 2) and rate == 0.5
 
 
+def test_tight_bbox_from_mask_union_of_all_pixels():
+    m = np.zeros((6, 8), dtype=np.uint8)   # (d0=row, d1=col)
+    m[2:5, 1:6] = 1                          # rows 2..4, cols 1..5
+    box = DG.tight_bbox_from_mask(m)
+    # half-open (x1=col_min, y1=row_min, x2=col_max+1, y2=row_max+1)
+    assert box == (1.0, 2.0, 6.0, 5.0)
+
+
+def test_tight_bbox_from_mask_two_components_encloses_both():
+    m = np.zeros((10, 10), dtype=np.uint8)
+    m[1:3, 1:3] = 1     # top-left blob
+    m[7:9, 6:8] = 1     # bottom-right blob
+    box = DG.tight_bbox_from_mask(m)
+    assert box == (1.0, 1.0, 8.0, 9.0)   # single tight hull around BOTH
+
+
+def test_tight_bbox_from_mask_empty_is_none():
+    assert DG.tight_bbox_from_mask(np.zeros((4, 4), dtype=np.uint8)) is None
+
+
+def test_overlay_annotations_best_iou_and_top_by_score():
+    gt = (0.0, 0.0, 4.0, 4.0)
+    boxes = np.array([
+        [0.0, 0.0, 4.0, 4.0],   # 0: perfect IoU=1.0, low score
+        [10.0, 10.0, 12.0, 12.0],  # 1: IoU 0, highest score
+        [0.0, 0.0, 2.0, 4.0],   # 2: IoU 0.5, mid score
+    ], dtype=float)
+    scores = np.array([0.10, 0.90, 0.50], dtype=float)
+    ann = DG.overlay_annotations(boxes, scores, gt, top_k=2)
+    assert ann["best_idx"] == 0                       # highest IoU, not highest score
+    assert ann["top_idx"] == [1, 2]                   # top-2 by score, desc
+    np.testing.assert_allclose(ann["ious"][0], 1.0)
+    np.testing.assert_allclose(ann["ious"][2], 0.5)
+
+
+def test_overlay_annotations_no_boxes_and_no_gt():
+    empty = DG.overlay_annotations(np.zeros((0, 4)), np.zeros((0,)), (0, 0, 1, 1))
+    assert empty["best_idx"] == -1 and empty["top_idx"] == [] and len(empty["ious"]) == 0
+    no_gt = DG.overlay_annotations(np.array([[0.0, 0.0, 2.0, 2.0]]), np.array([0.7]), None, top_k=5)
+    assert no_gt["best_idx"] == -1 and no_gt["top_idx"] == [0]   # top-by-score still, IoU undefined
+    np.testing.assert_allclose(no_gt["ious"], [0.0])
+
+
 def test_per_volume_recall_counts_lesions_not_boxes():
     # vol 1: GT hit on 2 slices; vol 2: GT present but never hit
     gt = _gt([
