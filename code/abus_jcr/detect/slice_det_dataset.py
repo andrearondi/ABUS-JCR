@@ -23,6 +23,7 @@ from .. import cache as K
 from ..augment import TRAIN_AUGMENT
 from ..slice_dataset import get_stack
 from . import augment_ops
+from . import copy_paste
 
 
 def boxes_halfopen_for(slice_boxes_df: pd.DataFrame, vid: int, z: int) -> np.ndarray:
@@ -110,7 +111,23 @@ class SliceDetectionDataset:
         self.stack_fn = stack_fn
         self.policy = policy
         self.samples = enumerate_samples(cache_root, self.volume_ids, slice_boxes_df)
+        # [P2-UPDATE P2] shadow-aware copy-paste bank (built only when enabled; default OFF).
+        self._crop_bank = self._build_crop_bank() if (self.train and self.policy.get("lesion_copy_paste", False)) else []
         self.set_epoch(0)
+
+    def _build_crop_bank(self, cap: int = 400):
+        """Extract lesion+shadow crops from up to ``cap`` lesion slices (un-augmented)."""
+        lesion = [(vid, z) for vid, z, is_les in self.samples if is_les]
+        rng = np.random.default_rng((int(self.seed), 777))
+        if len(lesion) > cap:
+            lesion = [lesion[i] for i in rng.choice(len(lesion), size=cap, replace=False)]
+        bank = []
+        for vid, z in lesion:
+            stack = np.asarray(self.stack_fn(self.cache_root, vid, z), dtype=np.float32)
+            boxes = boxes_halfopen_for(self.slice_boxes_df, vid, z)
+            for b in boxes:
+                bank.append(copy_paste.extract_lesion_crop(stack, b))
+        return bank
 
     def set_epoch(self, epoch: int) -> None:
         """(Re)compute this epoch's sample order. Train subsamples; else keep all."""
@@ -135,6 +152,10 @@ class SliceDetectionDataset:
         boxes = boxes_halfopen_for(self.slice_boxes_df, vid, z)
         if self.train and rng is not None:
             stack, boxes = augment_ops.apply_train_augment(stack, boxes, rng, policy=self.policy)
+            # [P2-UPDATE P2] shadow-aware copy-paste (default OFF; only when bank built).
+            if self._crop_bank and rng.random() < float(self.policy.get("copy_paste_p", 0.0)):
+                crop = self._crop_bank[int(rng.integers(0, len(self._crop_bank)))]
+                stack, boxes = copy_paste.paste_lesion(stack, boxes, crop, rng)
         return stack, boxes
 
     def __getitem__(self, i: int):

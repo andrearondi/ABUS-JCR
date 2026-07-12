@@ -87,7 +87,8 @@ def test_load_numpy_sample_hflip_syncs_box_and_channels(tmp_path):
     ds = D.SliceDetectionDataset(tmp_path, df, volume_ids=[100], train=True, seed=0,
                                  policy=dict(D.TRAIN_AUGMENT, horizontal_flip_p=1.0,
                                              small_translation=False, intensity_jitter=False,
-                                             gaussian_blur=False, gaussian_noise=False))
+                                             gaussian_blur=False, gaussian_noise=False,
+                                             scale_zoom=False, rotation=False))
     rng = np.random.default_rng(0)
     stack, boxes = ds.load_numpy_sample(100, 2, rng)
     assert stack.shape == (C.C_CHANNELS, d0, d1)

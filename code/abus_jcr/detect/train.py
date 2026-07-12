@@ -1,8 +1,10 @@
-"""Detector training — standard recipe + val-loss early stopping (Inv. 2, 9, 10, 14).
+"""Detector training — standard recipe + val 2D-AP early stopping (Inv. 2 amended, 9, 10, 14).
 
-Trained *normally* (Inv. 2): SGD/cosine, early stopping on the official 30-case
-Val split for **both** regimes (Inv. 9 — Val is the model-selection split). No FROC
-operating point, no competitive threshold/NMS tuning here.
+[P2-UPDATE B5] Model selection is on a DETECTION metric — **val 2D-AP@0.3** on the
+official 30-case Val split — not val-loss (which decoupled from detection quality
+and selected epoch-2 basins). SGD/cosine recipe unchanged; val-loss is still logged
+as a diagnostic. No FROC operating point, no competitive threshold/NMS tuning here
+(Phase 3 owns the recall-saturating operating point).
 
 - ``--regime fold  --fold f`` (seed ``DET_FOLD_SEED``): trains on Train volumes with
   ``manifest.fold != f`` only (Inv. 10, out-of-fold) -> ``retinanet_fold{f}.pt``.
@@ -98,6 +100,43 @@ def _val_loss(model, loader, device) -> float:
     return total / max(1, n)
 
 
+def _val_gt_df(slice_boxes_val: pd.DataFrame, val_ids: Sequence[int]) -> pd.DataFrame:
+    """Val GT as half-open ``(x1,y1,x2,y2)`` per slice for the 2D-AP metric.
+
+    Inclusive iso ``(r0,c0,r1,c1)`` -> half-open ``x1=c0, y1=r0, x2=c1+1, y2=r1+1``.
+    """
+    df = slice_boxes_val[slice_boxes_val["volume_id"].isin(list(val_ids))]
+    return pd.DataFrame({
+        "volume_id": df["volume_id"].astype("int64").to_numpy(),
+        "slice_z": df["slice_z"].astype("int64").to_numpy(),
+        "x1": df["c0"].to_numpy(dtype=float),
+        "y1": df["r0"].to_numpy(dtype=float),
+        "x2": (df["c1"].to_numpy() + 1).astype(float),
+        "y2": (df["r1"].to_numpy() + 1).astype(float),
+    })
+
+
+def _val_detection_metrics(model, cache_root, val_ids, gt_df, device, batch_size):
+    """[P2-UPDATE B5] eval-mode val detection metrics: 2D-AP@thresh (selection) +
+    per-volume recall (logged). Runs the same inference entry Phase 3 reuses."""
+    import pandas as _pd
+
+    from . import infer
+    from .metrics import val_ap_2d, per_volume_recall_2d
+
+    frames = [
+        infer.run_detector_on_volume(
+            model, cache_root, int(vid),
+            C.DET_DIAG_SCORE_THRESH, C.DET_DIAG_NMS_THRESH, C.DET_DIAG_DETECTIONS_PER_IMG,
+            batch_size=batch_size, device=device)
+        for vid in val_ids
+    ]
+    det_df = _pd.concat(frames, ignore_index=True) if frames else frames
+    ap = val_ap_2d(det_df, gt_df, C.DET_AP_IOU_THRESH)
+    vrec = per_volume_recall_2d(det_df, gt_df, C.DET_PER_SLICE_RECALL["score_thresh"], C.DET_AP_IOU_THRESH)
+    return float(ap), float(vrec)
+
+
 def train_detector(
     regime: str,
     fold_or_seed: int,
@@ -148,7 +187,9 @@ def train_detector(
         opt, lambda s: _lr_lambda(s, C.DET_LR_SCHEDULE["warmup_iters"],
                                   C.DET_LR_SCHEDULE["warmup_factor"], total_iters))
 
-    best_val = float("inf")
+    gt_df_val = _val_gt_df(slice_boxes_val, va_ids)   # [P2-UPDATE B5] AP selection target
+
+    best_ap = float("-inf")     # [P2-UPDATE B5] select on MAX val 2D-AP (was: min val-loss)
     best_epoch = -1
     epochs_no_improve = 0
     global_step = 0
@@ -174,21 +215,28 @@ def train_detector(
             train_loss = running / max(1, nb)
 
             val_loss = _val_loss(model, val_loader, device)
+            # [P2-UPDATE B5] detection-metric selection: eval-mode val 2D-AP@0.3 (+ per-vol recall).
+            val_ap, val_recall = _val_detection_metrics(
+                model, cache_root, va_ids, gt_df_val, device, batch_size)
             lr_now = opt.param_groups[0]["lr"]
-            rec = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "lr": lr_now}
+            rec = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss,
+                   "val_ap": val_ap, "val_lesion_recall": val_recall, "lr": lr_now}
             logf.write(json.dumps(rec) + "\n"); logf.flush()
-            print(f"[{run}] epoch {epoch}: train {train_loss:.4f}  val {val_loss:.4f}  lr {lr_now:.2e}")
+            print(f"[{run}] epoch {epoch}: train {train_loss:.4f}  val_loss {val_loss:.4f}  "
+                  f"val_ap {val_ap:.4f}  val_rec {val_recall:.4f}  lr {lr_now:.2e}")
 
-            if val_loss < best_val - 1e-6:
-                best_val = val_loss; best_epoch = epoch; epochs_no_improve = 0
+            if val_ap > best_ap + 1e-6:
+                best_ap = val_ap; best_epoch = epoch; epochs_no_improve = 0
                 cfg = {"regime": regime, "fold_or_seed": int(fold_or_seed), "seed": seed,
-                       "best_epoch": best_epoch, "best_val_loss": best_val}
+                       "best_epoch": best_epoch, "best_val_ap": best_ap,
+                       "best_val_loss": val_loss, "selection_metric": C.DET_SELECTION_METRIC}
                 save_checkpoint(ckpt_path, model, cfg)
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= patience:
-                    print(f"[{run}] early stop at epoch {epoch} (best epoch {best_epoch}, val {best_val:.4f})")
+                    print(f"[{run}] early stop at epoch {epoch} (best epoch {best_epoch}, "
+                          f"val_ap {best_ap:.4f})")
                     break
 
     return {"run": run, "checkpoint": str(ckpt_path), "log": str(log_path),
-            "best_epoch": best_epoch, "best_val_loss": best_val, "epochs_ran": epoch + 1}
+            "best_epoch": best_epoch, "best_val_ap": best_ap, "epochs_ran": epoch + 1}

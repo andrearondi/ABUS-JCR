@@ -49,6 +49,25 @@ def test_anchor_override_sizes_and_ratios():
     assert m.anchor_generator.aspect_ratios[0] == (0.5, 1.0, 2.0)
 
 
+def test_matcher_thresholds_loosened_and_low_quality_on():
+    # [P2-UPDATE B2] explicit fg/bg IoU thresholds (were torchvision default 0.5/0.4).
+    m = _small_model(3)
+    assert m.proposal_matcher.high_threshold == C.DET_FG_IOU_THRESH == 0.4
+    assert m.proposal_matcher.low_threshold == C.DET_BG_IOU_THRESH == 0.3
+    assert m.proposal_matcher.allow_low_quality_matches is True
+
+
+def test_checkpoint_round_trip_preserves_matcher_thresholds(tmp_path):
+    m = build_retinanet(c_channels=3, num_classes=C.DET_NUM_CLASSES, pretrained=False,
+                        min_size=64, max_size=64, fg_iou_thresh=0.4, bg_iou_thresh=0.3)
+    path = tmp_path / "ckpt.pt"
+    save_checkpoint(path, m, {"regime": "fold", "fold_or_seed": 0})
+    m2, cfg2 = load_checkpoint(path)
+    assert cfg2["fg_iou_thresh"] == 0.4 and cfg2["bg_iou_thresh"] == 0.3
+    assert m2.proposal_matcher.high_threshold == 0.4
+    assert m2.proposal_matcher.low_threshold == 0.3
+
+
 def test_transform_uses_iso_frame_sizes_and_channel_norm():
     m = _small_model(3)
     assert m.transform.min_size == (64,)

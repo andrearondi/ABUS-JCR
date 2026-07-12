@@ -77,6 +77,8 @@ def build_retinanet(
     image_std = float(overrides.get("image_std", C.DET_IMAGE_STD))
     base_sizes = tuple(overrides.get("anchor_base_sizes", C.DET_ANCHOR_BASE_SIZES))
     aspect_ratios = tuple(float(a) for a in overrides.get("anchor_aspect_ratios", C.DET_ANCHOR_ASPECT_RATIOS))
+    fg_iou_thresh = float(overrides.get("fg_iou_thresh", C.DET_FG_IOU_THRESH))
+    bg_iou_thresh = float(overrides.get("bg_iou_thresh", C.DET_BG_IOU_THRESH))
 
     weights = RetinaNet_ResNet50_FPN_V2_Weights.COCO_V1 if pretrained else None
     weights_backbone = ResNet50_Weights.IMAGENET1K_V1 if pretrained else None
@@ -98,6 +100,14 @@ def build_retinanet(
     model.head.regression_head = RetinaNetRegressionHead(
         in_channels, num_anchors, norm_layer=norm_layer)
 
+    # --- [P2-UPDATE B2] anchor<->GT matcher: explicit (loosened) thresholds ---
+    # torchvision's default (0.5/0.4, never set) starved the cls head of positives on
+    # small/odd boxes. Loosen so more anchors per GT clear the fg bar; allow_low_quality
+    # still guarantees each GT >= 1 positive.
+    from torchvision.models.detection import _utils as det_utils
+    model.proposal_matcher = det_utils.Matcher(
+        fg_iou_thresh, bg_iou_thresh, allow_low_quality_matches=True)
+
     # --- transform: iso frame size + per-channel uniform normalisation ---
     model.transform = GeneralizedRCNNTransform(
         min_size, max_size, [image_mean] * c_channels, [image_std] * c_channels)
@@ -118,6 +128,8 @@ def build_retinanet(
         "image_std": image_std,
         "anchor_base_sizes": tuple(int(s) for s in base_sizes),
         "anchor_aspect_ratios": aspect_ratios,
+        "fg_iou_thresh": fg_iou_thresh,
+        "bg_iou_thresh": bg_iou_thresh,
         "stem_branch": stem_branch,
     }
     return model
@@ -152,6 +164,8 @@ def load_checkpoint(path):
         image_std=cfg["image_std"],
         anchor_base_sizes=cfg["anchor_base_sizes"],
         anchor_aspect_ratios=cfg["anchor_aspect_ratios"],
+        fg_iou_thresh=cfg.get("fg_iou_thresh", C.DET_FG_IOU_THRESH),
+        bg_iou_thresh=cfg.get("bg_iou_thresh", C.DET_BG_IOU_THRESH),
     )
     model.load_state_dict(blob["state_dict"])
     return model, cfg

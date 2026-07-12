@@ -129,25 +129,44 @@ DET_RULE = {
     "anchor_n_levels": 5,          # P3..P7; bases geometric (ratio 2), rounded; x 3 sub-octaves at build
     "aspect_pcts": [10, 50, 90],   # aspect_ratios = {h/w at these Train pcts} snapped to grid, U {1.0}
     "aspect_grid": [0.2, 0.25, 0.33, 0.5, 0.75, 1.0, 1.5, 2.0],
+    "anchor_min_base": 16,         # [P2-UPDATE B3] floor the smallest base at 16 even if union boxes lift
+                                   # diag-p1, so the small-lesion tail keeps anchor coverage.
     "intensity_sample_slices": 4000,  # seeded sample of Train iso slices for image_mean/std (float32 [0,1])
     "intensity_seed": 0,
 }
+# [P2-UPDATE B1] Per-slice 2D GT boxes enclose each LESION, not each raw component (Inv. 11 amended):
+# mask components whose bounding boxes are within DET_LABEL_MERGE_GAP iso px are unioned into one box
+# (speckle/shadow fragments of one lesion); genuinely separate foci stay distinct. gap=inf -> global
+# union; gap=0 -> per-component (old behaviour). Train-validated at [2.0'] (keep case-93 foci separate).
+DET_LABEL_MERGE_GAP     = 8
+# [P2-UPDATE B2] Anchor<->GT matcher thresholds (were torchvision defaults 0.5/0.4, never set -> the
+# positive-starvation bug). Loosened so real small/mid boxes clear the fg bar with several anchors.
+DET_FG_IOU_THRESH       = 0.4      # anchor IoU >= this -> positive (was default 0.5)
+DET_BG_IOU_THRESH       = 0.3      # anchor IoU <  this -> negative (was default 0.4)
 # Diagnostic-dump inference knobs (NOT the Phase-3 operating point; permissive so the dump is informative)
 DET_DIAG_SCORE_THRESH   = 0.05
 DET_DIAG_NMS_THRESH     = 0.5
 DET_DIAG_DETECTIONS_PER_IMG = 300
 # Training regime (split-independent)
-DET_NEG_POS_SLICE_RATIO = 3        # background:lesion slices sampled per epoch (reshuffled, seeded)
+DET_NEG_POS_SLICE_RATIO = 2        # [P2-UPDATE B6] background:lesion slices/epoch (was 3; ~2:1 enriches
+                                   # positive exposure vs the ~1:9.8 natural rate; watch FP at [2.4']).
 DET_FOLD_SEED           = 0        # single seed for the 5 k-fold candidate detectors (Inv. 10: they only make data)
 DET_FULL_SEEDS          = (0, 1, 2)# 3 seeds for the full-train deployment detectors (Inv. 14: reported mean±std)
 DET_OPTIMIZER           = {"name": "SGD", "lr": 0.01, "momentum": 0.9, "weight_decay": 1e-4}
 DET_LR_SCHEDULE         = {"warmup_iters": 500, "warmup_factor": 0.01, "kind": "cosine"}
 DET_MAX_EPOCHS          = 50
-DET_EARLYSTOP_PATIENCE  = 8        # epochs of no Val-loss improvement
-DET_BATCH_SIZE          = 8        # slices per step; A6000 48 GB, ~160x352 input
+# [P2-UPDATE B5] Model selection is on a DETECTION metric (val 2D-AP@0.3), not val-loss (Inv. 2 amended).
+DET_SELECTION_METRIC    = "val_ap2d@0.3"   # max over epochs; keep val_loss logged as a diagnostic
+DET_EARLYSTOP_PATIENCE  = 10       # epochs of no val-AP improvement (was 8 on val-loss; AP is noisier)
+DET_AP_IOU_THRESH       = 0.30     # IoU threshold for the 2D-AP selection metric
+DET_BATCH_SIZE          = 8        # slices per step; A6000 48 GB, ~160x352 input (VRAM-probe for 16 in RB)
 DET_PER_SLICE_RECALL    = {"score_thresh": 0.05, "iou_thresh": 0.30}  # 2D diagnostic recall readout
 
 # --- Phase 2 (B): FROZEN FROM THE [2.0] TRAIN PROBE (reconciled 2026-07-08) ---
+# [P2-UPDATE B3] STALE PENDING RE-RECONCILIATION: these were derived from the OLD per-component boxes.
+# After the union-box regen, RB_PHASE_2_UPDATE [2.0'] re-runs phase2_train_stats.py on the corrected
+# boxes and overwrites the anchor_* fields below (record before/after in RESULTS_PHASE_2_UPDATE). Expect
+# base sizes to shift up (fragment diag-p1=1.4 floor removed); aspect ratios stay wide (already correct).
 # RECONCILED against phase2_train_stats.py on the 100-case Train split (RESULTS_PHASE_2 [2.0b]).
 # These ARE the Train-derived design constants; the earlier Val ballpark survives in comments only.
 # Reconciliation: min_size/max_size/image_mean/anchor_base_sizes matched the provisional; image_std

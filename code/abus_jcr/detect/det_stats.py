@@ -60,6 +60,9 @@ def derive_constants(stats: Dict, rule: Dict = C.DET_RULE) -> Dict:
     n = int(rule["anchor_n_levels"])
 
     b0 = 2 ** int(round(math.log2(lo)))
+    # [P2-UPDATE B3] floor the smallest base so the small-lesion tail keeps coverage
+    # even when union boxes lift diag-p1 (grow-to-cover below still raises it if hi demands).
+    b0 = min(b0, int(rule.get("anchor_min_base", b0)))
     bases = [b0 * (2 ** i) for i in range(n)]
     top_needed = hi / (2 ** (2 / 3))
     # grow the ladder up whole octaves until the largest anchor covers hi.

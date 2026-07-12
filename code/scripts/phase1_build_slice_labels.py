@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from abus_jcr import cache as K
+from abus_jcr import conventions as C
 from abus_jcr.conventions import SLICE_AXIS
 from abus_jcr.io_nrrd import discover_cases
 from abus_jcr.slice_labels import build_slice_labels
@@ -49,6 +50,10 @@ def main() -> int:
     parser.add_argument("--out-root", default=DEFAULT_OUT_ROOT)
     parser.add_argument("--cases", type=int, nargs="+", default=None,
                         help="optional subset of case ids (default: all in the split)")
+    parser.add_argument("--merge-gap", type=float, default=C.DET_LABEL_MERGE_GAP,
+                        help="[P2-UPDATE B1] proximity-merge gap (iso px): fragments within this "
+                             "gap union into one lesion box; separate foci stay distinct. "
+                             "0 = per-component (old), inf = global union.")
     args = parser.parse_args()
 
     root = resolve_split_root(args)
@@ -64,7 +69,7 @@ def main() -> int:
     total_slices = 0
     for cid in sorted(cases):
         mask_iso = np.asarray(K.open_mask(cache_root, cid))
-        rows = build_slice_labels(cid, mask_iso)
+        rows = build_slice_labels(cid, mask_iso, merge_gap=args.merge_gap)
         all_rows.extend(rows)
         n_slices = mask_iso.shape[SLICE_AXIS]
         total_slices += n_slices
@@ -77,11 +82,12 @@ def main() -> int:
     fmt = _write_table(df, base)
 
     background = total_slices - lesion_slices
-    print(f"# Phase 1 slice labels — {label} ({len(cases)} cases) -> {base} [{fmt}]\n")
+    print(f"# Phase 1 slice labels — {label} ({len(cases)} cases) -> {base} [{fmt}]")
+    print(f"# box_derivation        = union_gap{args.merge_gap:g}  (P2-UPDATE B1: one box per lesion)\n")
     print(f"total slices           = {total_slices}")
     print(f"lesion-bearing slices  = {lesion_slices}")
     print(f"background slices       = {background}")
-    print(f"2D boxes (components)   = {len(df)}")
+    print(f"2D boxes (lesions)      = {len(df)}")
     return 0
 
 

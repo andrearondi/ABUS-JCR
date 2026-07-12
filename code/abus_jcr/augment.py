@@ -44,7 +44,16 @@ TRAIN_AUGMENT = {
     "gaussian_noise": True,
     "small_translation": True,
     "translate_frac": 0.0625,        # small in-plane shift
+    # [P2-UPDATE B4] scale/zoom — the highest-value missing detector aug (size robustness).
+    "scale_zoom": True,
+    "scale_range": [0.8, 1.2],       # isotropic zoom about the frame centre
+    # [P2-UPDATE B4] small in-plane rotation — now WIRED (was a dead flag). Large rotation forbidden.
+    "rotation": True,
     "rotation_deg": 5.0,             # small only (large rotation forbidden)
+    # [P2-UPDATE P2] shadow-aware lesion copy-paste — DEFAULT OFF (Stage-3 experiment only);
+    # when on, lesions are pasted WITH their posterior-shadow column (naive copy-paste stays forbidden).
+    "lesion_copy_paste": False,
+    "copy_paste_p": 0.5,             # per-sample paste probability when enabled
     # inference
     "tta": False,                    # no test-time augmentation by default
     # 2.5D consistency contract
