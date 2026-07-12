@@ -178,4 +178,4 @@ DET_MAX_SIZE            = 352      # round_up(max Train ISO d1-frame=341, 32). V
 DET_IMAGE_MEAN          = 0.23     # Train iso-slice mean (float32 [0,1]); per-channel uniform. Val: 0.228
 DET_IMAGE_STD           = 0.1658   # Train iso-slice std (n=4000 seeded slices); per-channel uniform. Val: 0.160
 DET_ANCHOR_BASE_SIZES   = (16, 32, 64, 128, 256)   # Train diag p1..p99 via the grow-to-cover rule. Val: p5=9..p95=139
-DET_ANCHOR_ASPECT_RATIOS = (0.2, 0.25, 0.5, 1.0)   # Train h/w p10/p50/p90=0.161/0.250/0.442 snapped +{1.0}
+DET_ANCHOR_ASPECT_RATIOS = (0.2, 0.25, 0.33, 1.0)   # Train h/w p10/p50/p90=0.161/0.250/0.442 snapped +{1.0}
