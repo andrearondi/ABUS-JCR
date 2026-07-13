@@ -50,7 +50,7 @@ def main() -> int:
         out_root=args.out_root, num_workers=args.num_workers, device=args.device,
     )
     print(f"\n**DONE** {summary['run']}: best epoch {summary['best_epoch']} "
-          f"(val_ap {summary['best_val_ap']:.4f}), ran {summary['epochs_ran']} epochs")
+          f"(cpm_proxy {summary['best_val_cpm_proxy']:.4f}), ran {summary['epochs_ran']} epochs")
     print(f"checkpoint = {summary['checkpoint']}")
     print(f"log        = {summary['log']}")
     return 0

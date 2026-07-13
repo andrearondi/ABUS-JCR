@@ -16,6 +16,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+from .. import conventions as C
+
 _BOX = ["x1", "y1", "x2", "y2"]
 
 
@@ -40,24 +42,11 @@ def _gt_by_image(gt_df: pd.DataFrame) -> Dict[Tuple[int, int], List[List[float]]
     return out
 
 
-def val_ap_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, iou_thresh: float = 0.30) -> float:
-    """Single-class 2D Average Precision at ``iou_thresh`` over all slices.
-
-    Detections are ranked globally by descending score and greedily matched to
-    unmatched GT within the SAME ``(volume_id, slice_z)``; a match with IoU >=
-    ``iou_thresh`` is a TP (one GT per detection), else a FP. AP is the all-point
-    (VOC2010+) area under the precision-recall envelope. Empty GT: 1.0 iff no
-    detections, else 0.0.
-    """
-    total_gt = int(len(gt_df))
-    if total_gt == 0:
-        return 1.0 if len(det_df) == 0 else 0.0
-    if len(det_df) == 0:
-        return 0.0
-
+def _match_sorted(det_df: pd.DataFrame, gt_df: pd.DataFrame, iou_thresh: float):
+    """Greedy score-ranked TP/FP labelling per image. Returns ``(tp, fp)`` arrays
+    aligned to detections sorted by descending score (one GT per detection)."""
     gt_img = {k: {"boxes": np.asarray(v, dtype=float), "used": np.zeros(len(v), dtype=bool)}
               for k, v in _gt_by_image(gt_df).items()}
-
     det = det_df.sort_values("score", ascending=False, kind="mergesort")
     tp = np.zeros(len(det), dtype=float)
     fp = np.zeros(len(det), dtype=float)
@@ -79,7 +68,25 @@ def val_ap_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, iou_thresh: float = 0.3
             tp[i] = 1.0
         else:
             fp[i] = 1.0
+    return tp, fp
 
+
+def val_ap_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, iou_thresh: float = 0.30) -> float:
+    """Single-class 2D Average Precision at ``iou_thresh`` over all slices.
+
+    Detections are ranked globally by descending score and greedily matched to
+    unmatched GT within the SAME ``(volume_id, slice_z)``; a match with IoU >=
+    ``iou_thresh`` is a TP (one GT per detection), else a FP. AP is the all-point
+    (VOC2010+) area under the precision-recall envelope. Empty GT: 1.0 iff no
+    detections, else 0.0.
+    """
+    total_gt = int(len(gt_df))
+    if total_gt == 0:
+        return 1.0 if len(det_df) == 0 else 0.0
+    if len(det_df) == 0:
+        return 0.0
+
+    tp, fp = _match_sorted(det_df, gt_df, iou_thresh)
     tp_cum = np.cumsum(tp)
     fp_cum = np.cumsum(fp)
     rec = tp_cum / total_gt
@@ -91,6 +98,37 @@ def val_ap_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, iou_thresh: float = 0.3
         mpre[i - 1] = max(mpre[i - 1], mpre[i])
     idx = np.where(mrec[1:] != mrec[:-1])[0]
     return float(np.sum((mrec[idx + 1] - mrec[idx]) * mpre[idx + 1]))
+
+
+def recall_at_fp_budgets_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, n_slices: int,
+                            budgets=C.DET_SELECTION_FP_BUDGETS, iou_thresh: float = 0.30):
+    """2D CPM-proxy: per-slice recall at each fixed FP/slice budget + their mean.
+
+    For budget ``B``, the operating threshold is where cumulative FP == ``B * n_slices``
+    (reading recall in the FP regime we deploy at, unlike AP which averages over all
+    regimes). Returns ``(mean_recall, {budget: recall})``. The mean is the selection
+    signal (Inv. 2 amended) — a pre-linking foreshadow of the Inv.-3 CPM. Empty GT:
+    1.0 iff no detections else 0.0, at every budget.
+    """
+    budgets = tuple(float(b) for b in budgets)
+    total_gt = int(len(gt_df))
+    if total_gt == 0:
+        per = {b: (1.0 if len(det_df) == 0 else 0.0) for b in budgets}
+        return (float(np.mean(list(per.values()))) if per else float("nan")), per
+    if len(det_df) == 0 or n_slices <= 0:
+        per = {b: 0.0 for b in budgets}
+        return 0.0, per
+
+    tp, fp = _match_sorted(det_df, gt_df, iou_thresh)
+    tp_cum = np.cumsum(tp)
+    fp_cum = np.cumsum(fp)
+    per = {}
+    for b in budgets:
+        fp_allowed = b * n_slices
+        # last detection admitted before cumulative FP would exceed the budget
+        idx = int(np.searchsorted(fp_cum, fp_allowed, side="right")) - 1
+        per[b] = float(tp_cum[idx] / total_gt) if idx >= 0 else 0.0
+    return float(np.mean(list(per.values()))), per
 
 
 def per_slice_recall_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame,

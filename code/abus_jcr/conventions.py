@@ -155,10 +155,15 @@ DET_FULL_SEEDS          = (0, 1, 2)# 3 seeds for the full-train deployment detec
 DET_OPTIMIZER           = {"name": "SGD", "lr": 0.01, "momentum": 0.9, "weight_decay": 1e-4}
 DET_LR_SCHEDULE         = {"warmup_iters": 500, "warmup_factor": 0.01, "kind": "cosine"}
 DET_MAX_EPOCHS          = 50
-# [P2-UPDATE B5] Model selection is on a DETECTION metric (val 2D-AP@0.3), not val-loss (Inv. 2 amended).
-DET_SELECTION_METRIC    = "val_ap2d@0.3"   # max over epochs; keep val_loss logged as a diagnostic
-DET_EARLYSTOP_PATIENCE  = 10       # epochs of no val-AP improvement (was 8 on val-loss; AP is noisier)
-DET_AP_IOU_THRESH       = 0.30     # IoU threshold for the 2D-AP selection metric
+# [P2-UPDATE B5] Model selection is on a DETECTION metric, not val-loss (Inv. 2 amended). The metric is
+# a 2D CPM-proxy: mean per-slice recall at the FROC FP/slice budgets (a pre-linking foreshadow of the
+# Inv.-3 CPM = mean recall at fixed FP operating points). Better-aligned than generic AP for a candidate
+# generator and discriminative where per-volume recall saturates. val_ap + val_loss stay logged.
+DET_SELECTION_METRIC    = "val_cpm_proxy_2d@0.3"
+DET_SELECTION_FP_BUDGETS = (0.125, 0.25, 0.5, 1, 2, 4, 8)  # per-slice FP budgets (mirror KEY_FP; per-slice
+                                   # at Phase 2 pre-linking, not per-volume). Selection = mean recall over these.
+DET_EARLYSTOP_PATIENCE  = 10       # epochs of no CPM-proxy improvement (was 8 on val-loss; the metric is noisy)
+DET_AP_IOU_THRESH       = 0.30     # IoU threshold for the selection metrics (CPM-proxy + logged AP)
 DET_BATCH_SIZE          = 8        # slices per step; A6000 48 GB, ~160x352 input (VRAM-probe for 16 in RB)
 DET_PER_SLICE_RECALL    = {"score_thresh": 0.05, "iou_thresh": 0.30}  # 2D diagnostic recall readout
 
