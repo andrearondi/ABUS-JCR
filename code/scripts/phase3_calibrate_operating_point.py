@@ -28,7 +28,7 @@ from abus_jcr import cache as K
 from abus_jcr import conventions as C
 from _phase3_common import (add_phase3_paths, assert_device, cache_root, checkpoints_dir,
                             load_manifest, load_official_gt, gt_official_tuple,
-                            linked_recall, filter_by_score)
+                            linked_recall, filter_by_score, load_or_run_detections)
 
 SWEEP = [0.5, 0.3, 0.2, 0.1, 0.05, 0.03, 0.02, 0.01, 0.005]
 KNEE_FRAC = 0.98
@@ -38,12 +38,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="[3.4] operating-point calibration (Val)")
     add_phase3_paths(parser)
     parser.add_argument("--knee-frac", type=float, default=KNEE_FRAC)
+    parser.add_argument("--no-cache", action="store_true",
+                        help="do not read/write the per-volume detection cache (force recompute)")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
     assert_device(args.device)
     from abus_jcr.detect.retinanet import load_checkpoint
-    from abus_jcr.detect.infer import run_detector_on_volume
 
     manifest = load_manifest(args)
     croot = cache_root(args)
@@ -53,21 +54,29 @@ def main() -> int:
     gt_by_vid = {v: gt_official_tuple(gt_idx, v) for v in val_ids}
 
     op_min = min(SWEEP)
-    # Per seed: run once at op_min, cache detections; sweep by filtering.
+    # Per seed: run the detector ONCE per volume at op_min (cached to disk, so a restart
+    # resumes), then sweep every threshold by filtering the cached detections.
     seed_curves = {}
     for s in C.DET_FULL_SEEDS:
         model, _ = load_checkpoint(checkpoints_dir(args) / f"retinanet_full_seed{s}.pt")
         model.to(args.device)
-        det_min = {v: run_detector_on_volume(
-            model, croot, v, score_thresh=op_min, nms_thresh=C.LINK_NMS_THRESH,
-            detections_per_img=C.LINK_DETECTIONS_PER_IMG, device=args.device) for v in val_ids}
+        tag = f"full_seed{s}_op{op_min}"
+        det_min = {}
+        for k, v in enumerate(val_ids, 1):
+            det_min[v] = load_or_run_detections(
+                args.out_root, tag, v, model, croot, op_min, args.device,
+                use_cache=not args.no_cache)
+            print(f"  [detect] seed{s} vol {v} ({k}/{len(val_ids)}): {len(det_min[v])} dets",
+                  flush=True)
         del model
         curve = []
         for t in SWEEP:
             det_t = {v: filter_by_score(det_min[v], t) for v in val_ids}
             curve.append({"thresh": t, **linked_recall(det_t, gt_by_vid, meta_by_vid)})
+            print(f"  [sweep] seed{s} thresh={t}: recall={curve[-1]['recall']:.4f} "
+                  f"cands/vol={curve[-1]['cands_per_vol_mean']:.1f}", flush=True)
         seed_curves[s] = curve
-        print(f"seed {s} done")
+        print(f"seed {s} done", flush=True)
 
     # Aggregate over seeds (mean recall + mean cands/vol per threshold).
     print(f"\n# [3.4] Operating-point sweep (Val, {len(val_ids)} vols, mean over "

@@ -22,6 +22,7 @@ import pandas as pd
 from abus_jcr import conventions as C
 from abus_jcr.gt_labels import load_gt_documented, to_official_gt
 from abus_jcr.geometry import iou_official
+from abus_jcr.detect import schema as S
 from abus_jcr.link.tubes import link_tubes
 from abus_jcr.link.reconstruct import iso_tube_to_official
 
@@ -131,6 +132,33 @@ def linked_recall(
         "cands_per_vol_median": float(np.median(pool)) if pool.size else float("nan"),
         "pool_total": int(pool.sum()) if pool.size else 0,
     }
+
+
+def det_cache_path(out_root, tag: str, vid: int) -> Path:
+    """Per-volume detection-cache path: ``<out_root>/detections_cache/<tag>/det_<vid>``."""
+    return Path(out_root) / "detections_cache" / tag / f"det_{int(vid)}"
+
+
+def load_or_run_detections(out_root, tag: str, vid: int, model, croot, op_score_thresh: float,
+                           device, use_cache: bool = True) -> pd.DataFrame:
+    """Read cached per-volume detections if present, else run the detector and cache them.
+
+    The cache key ``tag`` must encode the detector identity + operating point (e.g.
+    ``fold0_op0.05``), so a filtered/re-run never mixes regimes. Makes [3.3]/[3.4]/[3.5]
+    resumable across disconnects and lets a re-run skip already-scored volumes. Pass
+    ``use_cache=False`` to force recomputation.
+    """
+    p = det_cache_path(out_root, tag, vid)
+    if use_cache and (p.with_suffix(".parquet").exists() or p.with_suffix(".csv").exists()):
+        return S.read_detections(p)
+    from abus_jcr.detect.infer import run_detector_on_volume
+    df = run_detector_on_volume(
+        model, croot, int(vid), score_thresh=float(op_score_thresh),
+        nms_thresh=C.LINK_NMS_THRESH, detections_per_img=C.LINK_DETECTIONS_PER_IMG, device=device)
+    if use_cache:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        S.write_detections(df, p)
+    return df
 
 
 def filter_by_score(det_df: pd.DataFrame, score_thresh: float) -> pd.DataFrame:

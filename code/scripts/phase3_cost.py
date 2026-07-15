@@ -63,6 +63,8 @@ def main() -> int:
         t3 = time.perf_counter()
         per_vol.append({"volume_id": vid, "n_det": int(len(det_df)), "n_tubes": len(tubes),
                         "detect_s": t1 - t0, "link_s": t2 - t1, "aggregate_s": t3 - t2})
+        print(f"  vol {vid}: {len(det_df)} dets, {len(tubes)} tubes "
+              f"(detect {t1-t0:.2f}s, link {t2-t1:.2f}s, agg {t3-t2:.2f}s)", flush=True)
 
     def col(k):
         return np.array([r[k] for r in per_vol], dtype=float)

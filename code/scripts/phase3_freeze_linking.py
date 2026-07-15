@@ -22,7 +22,8 @@ from pathlib import Path
 from abus_jcr import cache as K
 from abus_jcr import conventions as C
 from _phase3_common import (add_phase3_paths, assert_device, cache_root, checkpoints_dir,
-                            load_manifest, load_official_gt, gt_official_tuple, linked_recall)
+                            load_manifest, load_official_gt, gt_official_tuple, linked_recall,
+                            load_or_run_detections)
 
 
 def main() -> int:
@@ -32,12 +33,13 @@ def main() -> int:
                         help="Train folds to validate over (OOF detectors); default 0 1")
     parser.add_argument("--op-score-thresh", type=float, default=C.LINK_OP_SCORE_THRESH,
                         help="provisional operating point for the param check")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="do not read/write the per-volume detection cache (force recompute)")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
     assert_device(args.device)
     from abus_jcr.detect.retinanet import load_checkpoint
-    from abus_jcr.detect.infer import run_detector_on_volume
 
     manifest = load_manifest(args)
     croot = cache_root(args)
@@ -51,13 +53,15 @@ def main() -> int:
         model.to(args.device)
         vids = sorted(int(v) for v in manifest[(manifest["split"] == "train")
                                                & (manifest["fold"] == f)]["volume_id"])
-        for vid in vids:
-            det_by_vid[vid] = run_detector_on_volume(
-                model, croot, vid, score_thresh=args.op_score_thresh,
-                nms_thresh=C.LINK_NMS_THRESH, detections_per_img=C.LINK_DETECTIONS_PER_IMG,
-                device=args.device)
+        tag = f"fold{f}_op{args.op_score_thresh}"
+        for k, vid in enumerate(vids, 1):
+            det_by_vid[vid] = load_or_run_detections(
+                args.out_root, tag, vid, model, croot, args.op_score_thresh, args.device,
+                use_cache=not args.no_cache)
             gt_by_vid[vid] = gt_official_tuple(gt_idx, vid)
             meta_by_vid[vid] = K.read_meta(croot, vid)
+            print(f"  [detect] fold{f} vol {vid} ({k}/{len(vids)}): {len(det_by_vid[vid])} dets",
+                  flush=True)
         del model
 
     base = dict(link_iou=C.LINK_IOU, max_z_gap=C.LINK_MAX_Z_GAP, min_tube_len=C.LINK_MIN_TUBE_LEN)
@@ -71,7 +75,8 @@ def main() -> int:
           f"op={args.op_score_thresh})\n")
     ref = linked_recall(det_by_vid, gt_by_vid, meta_by_vid, **base)
     print(f"DEFAULTS {base}: recall={ref['recall']:.4f} "
-          f"cands/vol mean={ref['cands_per_vol_mean']:.1f} median={ref['cands_per_vol_median']:.1f}\n")
+          f"cands/vol mean={ref['cands_per_vol_mean']:.1f} median={ref['cands_per_vol_median']:.1f}\n",
+          flush=True)
 
     results = {"defaults": {**base, **ref}, "sweeps": {}}
     for param, values in sweeps.items():
@@ -82,7 +87,7 @@ def main() -> int:
             r = linked_recall(det_by_vid, gt_by_vid, meta_by_vid, **kw)
             tag = "  <- default" if v == base[param] else ""
             print(f"    {param}={v:<5} recall={r['recall']:.4f} "
-                  f"cands/vol={r['cands_per_vol_mean']:.1f}{tag}")
+                  f"cands/vol={r['cands_per_vol_mean']:.1f}{tag}", flush=True)
             results["sweeps"][param].append({"value": v, **r})
         print()
 

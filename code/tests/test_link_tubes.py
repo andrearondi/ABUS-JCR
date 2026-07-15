@@ -79,6 +79,91 @@ def test_empty_input_returns_empty():
     assert link_tubes(S.empty_detections()) == []
 
 
+def _naive_link_tubes(det_df, *, link_iou, max_z_gap, min_tube_len):
+    """Reference scalar implementation of the frozen greedy linker (pre-vectorisation).
+
+    Kept in the test only, to pin that the vectorised ``link_tubes`` is byte-identical.
+    """
+    from abus_jcr.detect.diagnostics import iou_2d
+    S.validate_detections(det_df)
+    if len(det_df) == 0:
+        return []
+    recs = det_df[["slice_z", "x1", "y1", "x2", "y2", "score"]].to_numpy(dtype=float)
+    order = sorted(range(len(recs)),
+                   key=lambda i: (recs[i][0], recs[i][1], recs[i][2], recs[i][3], recs[i][4]))
+    boxes = [(int(recs[i][0]), (recs[i][1], recs[i][2], recs[i][3], recs[i][4]), float(recs[i][5]))
+             for i in order]
+    n = len(boxes)
+    consumed = [False] * n
+    by_z = {}
+    for i, (z, _, _) in enumerate(boxes):
+        by_z.setdefault(z, []).append(i)
+
+    def best_match(head_box, z_lo, z_hi):
+        best_i, best_iou = -1, link_iou
+        for z in range(z_lo, z_hi + 1):
+            for j in by_z.get(z, ()):
+                if consumed[j]:
+                    continue
+                iou = iou_2d(head_box, boxes[j][1])
+                if iou >= best_iou and iou >= link_iou:
+                    if iou > best_iou or best_i == -1:
+                        best_iou, best_i = iou, j
+        return best_i
+
+    seed_order = sorted(range(n), key=lambda i: (-boxes[i][2], i))
+    tubes = []
+    for s in seed_order:
+        if consumed[s]:
+            continue
+        consumed[s] = True
+        members = [s]
+        head = s
+        while True:
+            z = boxes[head][0]
+            j = best_match(boxes[head][1], z + 1, z + max_z_gap + 1)
+            if j == -1:
+                break
+            consumed[j] = True; members.append(j); head = j
+        head = s
+        while True:
+            z = boxes[head][0]
+            j = best_match(boxes[head][1], z - max_z_gap - 1, z - 1)
+            if j == -1:
+                break
+            consumed[j] = True; members.append(j); head = j
+        tube = sorted((boxes[m] for m in members), key=lambda b: b[0])
+        tubes.append(tube)
+    return [t for t in tubes if len(t) >= min_tube_len]
+
+
+def _tube_key(tubes):
+    """Order-independent canonical form: sorted tuples of (z, rounded box, rounded score)."""
+    out = []
+    for t in tubes:
+        out.append(tuple((z, tuple(round(c, 6) for c in b), round(sc, 6)) for z, b, sc in t))
+    return sorted(out)
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("link_iou,max_z_gap,min_tube_len",
+                         [(0.30, 1, 2), (0.20, 0, 1), (0.50, 2, 3)])
+def test_link_tubes_differential(seed, link_iou, max_z_gap, min_tube_len):
+    # Random overlapping detections across many slices — exercises seeding, gap
+    # bridging, tie-breaks, and pruning. The vectorised linker must match the naive one.
+    rng = np.random.default_rng(seed)
+    rows = []
+    for z in range(25):
+        for _ in range(int(rng.integers(0, 12))):
+            x1 = rng.uniform(0, 60); y1 = rng.uniform(0, 40)
+            rows.append(_det(3, z, x1, y1, x1 + rng.uniform(3, 20), y1 + rng.uniform(3, 20),
+                             round(float(rng.uniform(0.05, 0.99)), 4)))
+    df = _frame(rows)
+    fast = link_tubes(df, link_iou=link_iou, max_z_gap=max_z_gap, min_tube_len=min_tube_len)
+    ref = _naive_link_tubes(df, link_iou=link_iou, max_z_gap=max_z_gap, min_tube_len=min_tube_len)
+    assert _tube_key(fast) == _tube_key(ref)
+
+
 def test_deterministic_stable_tiebreak():
     # Two identical-score seeds on the same slice; linking must be reproducible.
     rows = [_det(7, 0, 0, 0, 10, 10, 0.5),

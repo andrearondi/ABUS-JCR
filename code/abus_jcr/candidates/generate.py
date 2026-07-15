@@ -146,12 +146,35 @@ def _rank_within_detector(df: pd.DataFrame) -> pd.DataFrame:
     return out[CANDIDATE_COLUMNS]
 
 
+def _cached_detect_fn(base_detect: Callable, cache_dir, tag: str) -> Callable:
+    """Wrap a detector fn with a per-volume on-disk cache under ``<cache_dir>/<tag>/``.
+
+    Read the cached detections if present (a re-run/restart resumes instantly), else run
+    ``base_detect`` and persist the result. Uses the frozen ``detect/schema`` writer.
+    """
+    from pathlib import Path
+    from ..detect import schema as S
+
+    def detect(model, cr, vid, *, score_thresh, nms_thresh, detections_per_img):
+        p = Path(cache_dir) / tag / f"det_{int(vid)}"
+        if p.with_suffix(".parquet").exists() or p.with_suffix(".csv").exists():
+            return S.read_detections(p)
+        df = base_detect(model, cr, vid, score_thresh=score_thresh, nms_thresh=nms_thresh,
+                         detections_per_img=detections_per_img)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        S.write_detections(df, p)
+        return df
+
+    return detect
+
+
 def generate_split(
     manifest: pd.DataFrame, cache_root, checkpoints_dir, split: str, gt_gt_df: pd.DataFrame,
     *, op_score_thresh: float = C.LINK_OP_SCORE_THRESH,
     load_checkpoint_fn: Optional[Callable] = None,
     detect_fn: Callable = run_detector_on_volume,
     read_meta_fn: Optional[Callable] = None,
+    detections_cache_dir=None,
     progress: bool = False,
 ) -> pd.DataFrame:
     """Generate the full candidate pool for ``split`` (Inv. 9, 10, 14).
@@ -160,7 +183,9 @@ def generate_split(
     volumes, then applies within-(detector, volume) rank and the ignore-band label.
     ``gt_gt_df`` is the official GT table (columns ``GT_COLUMNS``), indexed by
     ``public_id`` to fetch each volume's single scoring box. Returns a
-    ``CANDIDATE_COLUMNS`` frame (Val = 3 seed pools stacked).
+    ``CANDIDATE_COLUMNS`` frame (Val = 3 seed pools stacked). When
+    ``detections_cache_dir`` is set, per-volume detections are cached to disk keyed by
+    ``{detector_of_origin}_op{op}`` so a restart resumes without re-running inference.
     """
     from .. import cache as K
     from ..detect.retinanet import load_checkpoint as _load_ckpt
@@ -174,8 +199,12 @@ def generate_split(
     all_rows: List[pd.DataFrame] = []
     for job in jobs:
         model, _cfg = load_checkpoint_fn(job["checkpoint"])
+        job_detect = detect_fn
+        if detections_cache_dir is not None:
+            job_detect = _cached_detect_fn(
+                detect_fn, detections_cache_dir, f"{job['detector_of_origin']}_op{op_score_thresh}")
         local_idx = 0
-        for vid in job["volume_ids"]:
+        for k, vid in enumerate(job["volume_ids"], 1):
             meta = read_meta_fn(cache_root, int(vid))
             row = gt_idx.loc[int(vid)]
             gt_official = (float(row["coordX"]), float(row["coordY"]), float(row["coordZ"]),
@@ -184,12 +213,13 @@ def generate_split(
                 model, cache_root, int(vid), meta, gt_official,
                 detector_of_origin=job["detector_of_origin"], split=split,
                 fold=job["fold_of"][int(vid)], op_score_thresh=op_score_thresh,
-                local_idx0=local_idx, detect_fn=detect_fn,
+                local_idx0=local_idx, detect_fn=job_detect,
             )
             local_idx += len(df_v)
             all_rows.append(df_v)
             if progress:
-                print(f"  {job['detector_of_origin']} vol {vid}: {len(df_v)} candidates")
+                print(f"  {job['detector_of_origin']} vol {vid} "
+                      f"({k}/{len(job['volume_ids'])}): {len(df_v)} candidates", flush=True)
 
     pool = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame(columns=CANDIDATE_COLUMNS)
     return _rank_within_detector(pool)

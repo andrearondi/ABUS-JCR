@@ -53,6 +53,8 @@ def main() -> int:
                              "set to the [3.4]-calibrated value if conventions not yet updated)")
     parser.add_argument("--phase5-execute", action="store_true",
                         help="required to run --split test (Inv. 9: Test touched only in Phase 5)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="do not read/write the per-volume detection cache (force recompute)")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -64,9 +66,10 @@ def main() -> int:
     manifest = load_manifest(args)
     gt_df = load_official_gt(args, args.split)
 
+    cache_dir = None if args.no_cache else str(Path(args.out_root) / "detections_cache")
     pool = generate_split(
         manifest, cache_root(args), checkpoints_dir(args), args.split, gt_df,
-        op_score_thresh=args.op_score_thresh, progress=True)
+        op_score_thresh=args.op_score_thresh, detections_cache_dir=cache_dir, progress=True)
 
     out_dir = Path(args.out_root) / "candidates"
     out_dir.mkdir(parents=True, exist_ok=True)
