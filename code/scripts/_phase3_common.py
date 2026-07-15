@@ -1,0 +1,144 @@
+"""Shared path resolution + linking helpers for the Phase-3 scripts.
+
+Phase 3 consumes the Phase-1 substrate (iso cache, manifest) under ``--phase1-out``
+and the Phase-2 checkpoints under ``--phase2-out``; it writes its own artefacts under
+``--out-root``. Official GT boxes come from each split's shipped ``bbx_labels.csv``.
+Paths default to SERVER_LAYOUT.md; override for local runs.
+
+The linked-recall helper is the calibration crux and is torch-free (operates on
+already-computed detection frames), so [3.3] freeze-linking and [3.4] operating-point
+sweeps reuse the SAME code — a param sweep never re-runs the detector.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from abus_jcr import conventions as C
+from abus_jcr.gt_labels import load_gt_documented, to_official_gt
+from abus_jcr.geometry import iou_official
+from abus_jcr.link.tubes import link_tubes
+from abus_jcr.link.reconstruct import iso_tube_to_official
+
+DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs/phase1"
+DEFAULT_PHASE2_OUT = "/home/maia-user/Andre2/outputs/phase2"
+DEFAULT_PHASE3_OUT = "/home/maia-user/Andre2/outputs/phase3"
+DEFAULT_DATA_ROOT = "/home/maia-user/Andre2/data"
+
+_SPLIT_DIR = {"train": "Train", "val": "Validation", "test": "Test"}
+
+
+def add_phase3_paths(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--phase1-out", default=DEFAULT_PHASE1_OUT,
+                        help=f"Phase-1 output root (cache/, manifest.csv); default {DEFAULT_PHASE1_OUT}")
+    parser.add_argument("--phase2-out", default=DEFAULT_PHASE2_OUT,
+                        help=f"Phase-2 output root (checkpoints/); default {DEFAULT_PHASE2_OUT}")
+    parser.add_argument("--out-root", default=DEFAULT_PHASE3_OUT,
+                        help=f"Phase-3 output root; default {DEFAULT_PHASE3_OUT}")
+    parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT,
+                        help=f"dataset root holding the split dirs; default {DEFAULT_DATA_ROOT}")
+
+
+def cache_root(args) -> Path:
+    return Path(args.phase1_out) / "cache"
+
+
+def checkpoints_dir(args) -> Path:
+    return Path(args.phase2_out) / "checkpoints"
+
+
+def load_manifest(args) -> pd.DataFrame:
+    return pd.read_csv(Path(args.phase1_out) / "manifest.csv")
+
+
+def split_root(args, split: str) -> Path:
+    return Path(args.data_root) / _SPLIT_DIR[split]
+
+
+def load_official_gt(args, split: str) -> pd.DataFrame:
+    """Official GT box table (``GT_COLUMNS``) for a split, from its ``bbx_labels.csv``."""
+    return to_official_gt(load_gt_documented(split_root(args, split) / "bbx_labels.csv"))
+
+
+def gt_official_tuple(gt_idx: pd.DataFrame, vid: int) -> Tuple[float, ...]:
+    """The single official scoring box for ``vid`` as a 6-tuple (from a public_id-indexed GT)."""
+    r = gt_idx.loc[int(vid)]
+    return (float(r["coordX"]), float(r["coordY"]), float(r["coordZ"]),
+            float(r["x_length"]), float(r["y_length"]), float(r["z_length"]))
+
+
+def assert_device(device: str) -> None:
+    """Fail loudly if CUDA is requested but unavailable (reused Phase-2 guard)."""
+    if not str(device).startswith("cuda"):
+        return
+    try:
+        import torch
+    except ImportError as e:
+        raise SystemExit(f"--device {device} requested but torch is not installed ({e}). "
+                         "Activate the abus-jcr env on the GPU host.")
+    if not torch.cuda.is_available():
+        raise SystemExit(
+            f"--device {device} requested but torch reports no CUDA GPU "
+            f"(is_available=False, device_count={torch.cuda.device_count()}). "
+            "Move to the A6000 GPU host and re-check (the linking/aggregation is CPU-only, "
+            "but candidate generation runs the detector on the GPU).")
+
+
+def linked_recall(
+    det_by_vid: Dict[int, pd.DataFrame],
+    gt_by_vid: Dict[int, Tuple[float, ...]],
+    meta_by_vid: Dict[int, dict],
+    *,
+    link_iou: float = C.LINK_IOU,
+    max_z_gap: int = C.LINK_MAX_Z_GAP,
+    min_tube_len: int = C.LINK_MIN_TUBE_LEN,
+    hit_iou: float = C.IOU_HIT_THRESHOLD,
+) -> Dict:
+    """Linked 3D recall + pool size over a set of volumes (torch-free; the sweep crux).
+
+    For each volume: link its (already-computed) detections into tubes, reconstruct each
+    tube to an official box, and count the volume HIT iff any candidate reaches
+    ``iou_official > hit_iou`` (== the FROC/labeling hit rule, Inv. 3). Returns
+    ``{recall, n_hit, n_vol, cands_per_vol_mean, cands_per_vol_median, pool_total}``.
+    """
+    n_vol = len(det_by_vid)
+    n_hit = 0
+    pool_sizes: List[int] = []
+    for vid, det_df in det_by_vid.items():
+        tubes = link_tubes(det_df, link_iou=link_iou, max_z_gap=max_z_gap,
+                           min_tube_len=min_tube_len)
+        pool_sizes.append(len(tubes))
+        gt = gt_by_vid[int(vid)]
+        meta = meta_by_vid[int(vid)]
+        hit = False
+        for tube in tubes:
+            official = iso_tube_to_official(tube, meta)
+            if iou_official(official, gt) > hit_iou:
+                hit = True
+                break
+        n_hit += int(hit)
+    pool = np.asarray(pool_sizes, dtype=float) if pool_sizes else np.zeros(0)
+    return {
+        "recall": (n_hit / n_vol) if n_vol else float("nan"),
+        "n_hit": n_hit,
+        "n_vol": n_vol,
+        "cands_per_vol_mean": float(pool.mean()) if pool.size else float("nan"),
+        "cands_per_vol_median": float(np.median(pool)) if pool.size else float("nan"),
+        "pool_total": int(pool.sum()) if pool.size else 0,
+    }
+
+
+def filter_by_score(det_df: pd.DataFrame, score_thresh: float) -> pd.DataFrame:
+    """Rows with ``score >= score_thresh`` — reproduces a higher-threshold detector run.
+
+    Running the detector once at the sweep minimum and filtering upward is exact for
+    the frozen NMS regime: an extra low-score box can neither win NMS against nor
+    displace a higher-score box, and the per-slice top-K cap keeps the highest scores
+    first. Documented in RB_PHASE_3 [3.4].
+    """
+    return det_df[det_df["score"] >= float(score_thresh)]

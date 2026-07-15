@@ -184,3 +184,33 @@ DET_IMAGE_MEAN          = 0.23     # Train iso-slice mean (float32 [0,1]); per-c
 DET_IMAGE_STD           = 0.1658   # Train iso-slice std (n=4000 seeded slices); per-channel uniform. Val: 0.160
 DET_ANCHOR_BASE_SIZES   = (16, 32, 64, 128, 256)   # Train diag p1..p99 via the grow-to-cover rule. Val: p5=9..p95=139
 DET_ANCHOR_ASPECT_RATIOS = (0.2, 0.25, 0.33, 1.0)   # Train h/w p10/p50/p90=0.161/0.250/0.442 snapped +{1.0}
+
+# ============================================================================
+# Phase 3 — recall-saturated candidate generation + the fixed 3D aggregation.
+# ============================================================================
+# --- Phase 3 (A): fixed 3D aggregation — FROZEN once, reused for ALL detectors (Inv. 4) ---
+LINK_IOU            = 0.30   # 2D IoU to continue a tube into the adjacent slice
+LINK_MAX_Z_GAP      = 1      # bridge up to this many non-firing slices within one tube
+LINK_MIN_TUBE_LEN   = 2      # discard tubes shorter than this many boxes (single-slice spikes)
+LINK_SCORE_AGG      = "max"  # per-tube baseline score = peak per-slice score (Inv./brief: committed)
+# --- Phase 3 (B): candidate-generation operating point (per-slice read-off; calibrated on VAL) ---
+LINK_NMS_THRESH        = 0.70   # loosened per-slice NMS (> DET_DIAG_NMS_THRESH 0.5); NOT disabled (Inv. 2)
+LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 300)
+LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the VAL linked-recall knee in [3.4], RECORD final
+PREFILTER_SCORE_FLOOR  = 0.0    # optional tube score_max floor (NoduleSAT-style); raised only to meet the
+                                # pool budget; RECORD its recall cost (0.0 = off)
+CANDIDATE_POOL_BUDGET  = 150    # soft target candidates/volume for the Phase-4 3D encoder (escape valve)
+# --- Phase 3 (C): candidate labeling (Inv. 11 ignore-band) — reuses geometry.iou_official (== iou_3d) ---
+LABEL_POS_IOU = 0.30            # candidate IoU with official GT box > this -> positive
+LABEL_NEG_IOU = 0.10            # candidate IoU < this -> negative; [0.10, 0.30] -> ignore (dropped)
+# --- Phase 3 (D): GT reconstruction-consistency tolerance (driven by Phase-1 measured fidelity) ---
+RECON_IOU_WARN_FRAC = 0.90     # >= this fraction of Train cases must clear 0.85 recon IoU
+RECON_IOU_SOFT      = 0.85     # typical-case target (Val median 0.942, Train median 0.936)
+# RECON hard floor is the existing RESAMPLE_IOU_FLOOR (0.50); any case below it = a linking/coord BUG.
+# --- Phase 3 (E): Phase-0b FP-structure probe ---
+FP_PROBE_ANISO_DEPTH_AXIS = 0  # d0 = depth/beam; anisotropy = extent_d0 / mean(extent_d1, extent_d2)
+FP_PROBE_CLUSTER_RADIUS   = 10.0  # iso-voxel single-linkage radius for the FP-cluster count
+
+# The score-statistics vector column names are FROZEN (consumed verbatim by Phase 4).
+SCORE_STAT_COLUMNS = ["score_max", "score_mean", "score_std", "score_min",
+                      "slice_count", "z_span", "fill_ratio"]  # fill_ratio = slice_count / z_span
