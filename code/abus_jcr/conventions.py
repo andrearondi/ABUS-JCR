@@ -143,6 +143,11 @@ DET_LABEL_MERGE_GAP     = 8
 # positive-starvation bug). Loosened so real small/mid boxes clear the fg bar with several anchors.
 DET_FG_IOU_THRESH       = 0.4      # anchor IoU >= this -> positive (was default 0.5)
 DET_BG_IOU_THRESH       = 0.3      # anchor IoU <  this -> negative (was default 0.4)
+# [P3-UPDATE D6] Anchor<->GT assignment. "fixed" = the torchvision IoU Matcher above (DEFAULT).
+# "atss" = adaptive per-GT threshold (abus_jcr/detect/atss.py) — fired ONLY if [D0] anchor coverage
+# shows starvation or the Stage-1 gate underperforms. nnDetection ran BCE+ATSS on this dataset (0.7704).
+DET_ASSIGNER            = "fixed"  # {"fixed","atss"}
+DET_ATSS_TOPK           = 9        # ATSS k (per FPN level); paper-flat over 7..19
 # Diagnostic-dump inference knobs (NOT the Phase-3 operating point; permissive so the dump is informative)
 DET_DIAG_SCORE_THRESH   = 0.05
 DET_DIAG_NMS_THRESH     = 0.5
@@ -152,17 +157,29 @@ DET_NEG_POS_SLICE_RATIO = 2        # [P2-UPDATE B6] background:lesion slices/epo
                                    # positive exposure vs the ~1:9.8 natural rate; watch FP at [2.4']).
 DET_FOLD_SEED           = 0        # single seed for the 5 k-fold candidate detectors (Inv. 10: they only make data)
 DET_FULL_SEEDS          = (0, 1, 2)# 3 seeds for the full-train deployment detectors (Inv. 14: reported mean±std)
-DET_OPTIMIZER           = {"name": "SGD", "lr": 0.01, "momentum": 0.9, "weight_decay": 1e-4}
+# [P3-UPDATE D4] Optimiser = AdamW at the recipe that PRODUCED the retinanet_resnet50_fpn_v2 COCO weights
+# (PR #5756: AdamW lr=1e-4, wd=0.05, --norm-weight-decay 0.0). The old SGD lr=0.01 was the *v1* recipe
+# applied to a v2 model — a COCO-scale LR (118k images) on ~100 independent lesions. Per-architecture
+# hyperparameters may differ (Inv. 2 A1); Phase-6 YOLO/Faster R-CNN recipes are independent.
+DET_OPTIMIZER           = {"name": "AdamW", "lr": 1e-4, "weight_decay": 0.05}
+DET_NORM_WEIGHT_DECAY   = 0.0      # exempt norm-layer affine + biases from weight decay (v2 --norm-weight-decay 0.0)
 DET_LR_SCHEDULE         = {"warmup_iters": 500, "warmup_factor": 0.01, "kind": "cosine"}
-DET_MAX_EPOCHS          = 50
-# [P2-UPDATE B5] Model selection is on a DETECTION metric, not val-loss (Inv. 2 amended). The metric is
-# a 2D CPM-proxy: mean per-slice recall at the FROC FP/slice budgets (a pre-linking foreshadow of the
-# Inv.-3 CPM = mean recall at fixed FP operating points). Better-aligned than generic AP for a candidate
-# generator and discriminative where per-volume recall saturates. val_ap + val_loss stay logged.
-DET_SELECTION_METRIC    = "val_cpm_proxy_2d@0.3"
-DET_SELECTION_FP_BUDGETS = (0.125, 0.25, 0.5, 1, 2, 4, 8)  # per-slice FP budgets (mirror KEY_FP; per-slice
-                                   # at Phase 2 pre-linking, not per-volume). Selection = mean recall over these.
-DET_EARLYSTOP_PATIENCE  = 10       # epochs of no CPM-proxy improvement (was 8 on val-loss; the metric is noisy)
+# [P3-UPDATE D2] Fixed, properly-annealed schedule (cosine LR -> ~0 over DET_TRAIN_EPOCHS) with NO
+# metric-based early stopping. The old (MAX_EPOCHS=50, EARLYSTOP_PATIENCE=10) pair stopped ~epoch 11-19,
+# always at ~98% of peak LR, so the deployed checkpoint never saw an annealed convergence phase.
+DET_TRAIN_EPOCHS        = 30       # fixed budget; cosine reaches ~0 here. Every epoch is saved to disk.
+DET_MAX_EPOCHS          = DET_TRAIN_EPOCHS   # back-compat alias (retired; use DET_TRAIN_EPOCHS)
+# [P3-UPDATE A1/D3] Model selection = POST-HOC, once, among the converged epochs, on the TRUE linked 3D
+# val CPM (Inv.-3 average_recall via the Phase-3 detect->link->oracle path). NOT a per-epoch per-slice
+# proxy. The per-slice CPM-proxy below is kept as a LOGGED DIAGNOSTIC only (it drives nothing) — its
+# per-slice FP budgets span 50-3254 FP/volume, a regime the Inv.-3 metric (0.125-8 FP/vol) never visits.
+DET_SELECTION_METRIC    = "val_linked_cpm_3d@0.3_posthoc"
+DET_SELECT_MIN_EPOCH    = 15       # only epochs >= this (the annealed half) are candidates for selection,
+                                   # so a lucky high-LR early epoch cannot be picked.
+DET_SELECT_OP_THRESH    = 0.03     # fixed reference operating point for the post-hoc selection sweep
+DET_SELECTION_FP_BUDGETS = (0.125, 0.25, 0.5, 1, 2, 4, 8)  # per-SLICE FP budgets for the LOGGED diagnostic
+                                   # proxy only (mirror KEY_FP's numbers; NOT the Inv.-3 per-volume metric).
+DET_EARLYSTOP_PATIENCE  = 10       # RETIRED (P3-UPDATE D2): no early stopping. Kept for back-compat only.
 DET_AP_IOU_THRESH       = 0.30     # IoU threshold for the selection metrics (CPM-proxy + logged AP)
 DET_BATCH_SIZE          = 8        # slices per step; A6000 48 GB, ~160x352 input (VRAM-probe for 16 in RB)
 DET_PER_SLICE_RECALL    = {"score_thresh": 0.05, "iou_thresh": 0.30}  # 2D diagnostic recall readout
@@ -191,15 +208,31 @@ DET_ANCHOR_ASPECT_RATIOS = (0.2, 0.25, 0.33, 1.0)   # Train h/w p10/p50/p90=0.16
 # --- Phase 3 (A): fixed 3D aggregation — FROZEN once, reused for ALL detectors (Inv. 4) ---
 LINK_IOU            = 0.30   # 2D IoU to continue a tube into the adjacent slice
 LINK_MAX_Z_GAP      = 1      # bridge up to this many non-firing slices within one tube
-LINK_MIN_TUBE_LEN   = 2      # discard tubes shorter than this many boxes (single-slice spikes)
+LINK_MIN_TUBE_LEN   = 2      # PROVISIONAL: widened sweep {2..6} at [3.3']; freeze the largest recall-neutral
+                            # value (RESULTS [3.3']). Precedent: Oh et al. 2023 ABUS 2D-link uses tau_s=5.
 LINK_SCORE_AGG      = "max"  # per-tube baseline score = peak per-slice score (Inv./brief: committed)
+# [P3-UPDATE L1] Tube drift/length caps — the pre-P3-UPDATE linker random-walked with NO cap and
+# reconstructed an unbounded union hull, producing whole-volume "candidates" (box_diag max 1052.9 vs the
+# 1154.1 volume diagonal; z_span max 414 in a ~407-slice volume) that consumed real lesions' boxes and
+# made linked recall NON-MONOTONE in the threshold. Both caps are Train-GT-derived at [3.3'] (no leakage,
+# not per-detector — Inv. 4). None = uncapped (asserted-set before the frozen generation run).
+LINK_MAX_TUBE_ZSPAN     = None   # set at [3.3']: round(1.8 * Train GT z-extent p99, iso slices)
+LINK_MAX_CENTROID_DRIFT = None   # set at [3.3']: round(1.5 * Train GT in-plane extent p99, iso px)
 # --- Phase 3 (B): candidate-generation operating point (per-slice read-off; calibrated on VAL) ---
-LINK_NMS_THRESH        = 0.70   # loosened per-slice NMS (> DET_DIAG_NMS_THRESH 0.5); NOT disabled (Inv. 2)
+LINK_NMS_THRESH        = 0.70   # PROVISIONAL: swept {0.5,0.6,0.7} at [3.3'], freeze the recall-neutral min
+                                # (MONAI medical RetinaNet uses 0.22; 0.5 is conservative). Loosened, not
+                                # disabled (Inv. 2). Still > DET_DIAG_NMS_THRESH 0.5 until re-frozen.
+LINK_CONTAINMENT_THRESH = 0.80  # [P3-UPDATE L4] per-slice containment suppression: drop a lower-score box if
+                                # inter/area_small >= this vs a higher-score box. Kills the nested small-in-big
+                                # duplicates IoU-NMS structurally cannot (IoU(small,big)=area_small/area_big).
 LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 300)
-LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the VAL linked-recall knee in [3.4], RECORD final
+LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the ranking-aware VAL operating point in [3.4'], RECORD
 PREFILTER_SCORE_FLOOR  = 0.0    # optional tube score_max floor (NoduleSAT-style); raised only to meet the
                                 # pool budget; RECORD its recall cost (0.0 = off)
-CANDIDATE_POOL_BUDGET  = 150    # soft target candidates/volume for the Phase-4 3D encoder (escape valve)
+CANDIDATE_POOL_BUDGET  = 1000   # [P3-UPDATE L6] soft target candidates/volume (was 150). Set module is
+                                # comfortable to n~2000; LUNA16 precedent ~850/scan at 98.3% recall.
+RECALL_CEILING_FRAC    = 0.98   # [P3-UPDATE L5/A2] operating point = among thresholds with linked recall
+                                # >= this * max, pick the one maximising linked val CPM (ranking-aware).
 # --- Phase 3 (C): candidate labeling (Inv. 11 ignore-band) — reuses geometry.iou_official (== iou_3d) ---
 LABEL_POS_IOU = 0.30            # candidate IoU with official GT box > this -> positive
 LABEL_NEG_IOU = 0.10            # candidate IoU < this -> negative; [0.10, 0.30] -> ignore (dropped)

@@ -159,7 +159,10 @@ def test_link_tubes_differential(seed, link_iou, max_z_gap, min_tube_len):
             rows.append(_det(3, z, x1, y1, x1 + rng.uniform(3, 20), y1 + rng.uniform(3, 20),
                              round(float(rng.uniform(0.05, 0.99)), 4)))
     df = _frame(rows)
-    fast = link_tubes(df, link_iou=link_iou, max_z_gap=max_z_gap, min_tube_len=min_tube_len)
+    # The naive reference models only the linking core, so disable the P3-UPDATE aggregation extras
+    # (containment suppression L4, drift caps L1) here — they are pinned by their own tests.
+    fast = link_tubes(df, link_iou=link_iou, max_z_gap=max_z_gap, min_tube_len=min_tube_len,
+                      max_tube_zspan=None, max_centroid_drift=None, containment_thresh=1.0)
     ref = _naive_link_tubes(df, link_iou=link_iou, max_z_gap=max_z_gap, min_tube_len=min_tube_len)
     assert _tube_key(fast) == _tube_key(ref)
 

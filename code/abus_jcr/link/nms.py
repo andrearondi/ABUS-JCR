@@ -18,7 +18,9 @@ from __future__ import annotations
 from typing import List, Sequence
 
 import numpy as np
+import pandas as pd
 
+from .. import conventions as C
 from ..geometry import OfficialBox
 
 
@@ -28,6 +30,60 @@ def _official_to_corners(boxes: np.ndarray):
     c = b[:, :3]
     half = b[:, 3:6] / 2.0
     return c - half, c + half
+
+
+def containment_suppress_2d(boxes: np.ndarray, scores: np.ndarray,
+                            thresh: float = C.LINK_CONTAINMENT_THRESH) -> List[int]:
+    """[P3-UPDATE L4] Per-slice containment suppression -> kept indices (score-desc order).
+
+    Drops a lower-score box ``b`` if it is >= ``thresh`` contained in a higher-score box
+    ``a`` (``inter / area_b >= thresh``). This removes the nested small-in-big duplicates
+    that IoU-NMS structurally cannot suppress (``IoU(small,big) = area_small/area_big`` is
+    tiny for very different scales, so it never reaches the 0.5-0.7 IoU-NMS bar) — the
+    mechanism behind the ~226 near-duplicate tubes/object. ``boxes`` are half-open
+    ``(x1,y1,x2,y2)`` for ONE slice; complements, never replaces, torchvision's per-slice
+    IoU-NMS. ``thresh >= 1.0`` keeps everything.
+    """
+    boxes = np.asarray(boxes, dtype=float).reshape(-1, 4)
+    scores = np.asarray(scores, dtype=float).reshape(-1)
+    n = len(boxes)
+    if n == 0 or thresh >= 1.0:
+        return list(range(n))
+    areas = np.clip(boxes[:, 2] - boxes[:, 0], 0, None) * np.clip(boxes[:, 3] - boxes[:, 1], 0, None)
+    order = np.argsort(-scores, kind="stable")
+    keep: List[int] = []
+    for i in order:
+        i = int(i)
+        drop = False
+        for k in keep:  # k has a higher score (kept earlier)
+            x1 = max(boxes[i, 0], boxes[k, 0]); y1 = max(boxes[i, 1], boxes[k, 1])
+            x2 = min(boxes[i, 2], boxes[k, 2]); y2 = min(boxes[i, 3], boxes[k, 3])
+            inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+            if areas[i] > 0 and inter / areas[i] >= thresh:
+                drop = True
+                break
+        if not drop:
+            keep.append(i)
+    return keep
+
+
+def containment_suppress_detections(det_df: pd.DataFrame,
+                                    thresh: float = C.LINK_CONTAINMENT_THRESH) -> pd.DataFrame:
+    """Apply ``containment_suppress_2d`` per ``(volume_id, slice_z)`` on a detection frame.
+
+    Torch-free; runs after the detector's per-slice IoU-NMS and before linking. Preserves
+    the detection schema and row semantics (``x=d1, y=d0``, half-open). ``thresh >= 1.0`` is
+    a no-op passthrough.
+    """
+    if thresh >= 1.0 or len(det_df) == 0:
+        return det_df
+    parts = []
+    for _key, grp in det_df.groupby(["volume_id", "slice_z"], sort=False):
+        boxes = grp[["x1", "y1", "x2", "y2"]].to_numpy(dtype=float)
+        scores = grp["score"].to_numpy(dtype=float)
+        keep = containment_suppress_2d(boxes, scores, thresh)
+        parts.append(grp.iloc[keep])
+    return pd.concat(parts, ignore_index=True) if parts else det_df.iloc[0:0]
 
 
 def nms_3d(boxes: Sequence[OfficialBox], scores: Sequence[float], iou_thr: float) -> List[int]:

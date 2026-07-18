@@ -49,10 +49,12 @@ def main() -> int:
         slice_boxes_train=sb_train, slice_boxes_val=sb_val,
         out_root=args.out_root, num_workers=args.num_workers, device=args.device,
     )
-    print(f"\n**DONE** {summary['run']}: best epoch {summary['best_epoch']} "
-          f"(cpm_proxy {summary['best_val_cpm_proxy']:.4f}), ran {summary['epochs_ran']} epochs")
-    print(f"checkpoint = {summary['checkpoint']}")
+    print(f"\n**DONE** {summary['run']}: ran {summary['epochs_ran']} epochs "
+          f"(all saved; select on epoch >= {summary['select_min_epoch']})")
+    print(f"epochs_dir = {summary['epochs_dir']}")
     print(f"log        = {summary['log']}")
+    print(f"NEXT: python scripts/phase2_select_checkpoint.py --run {summary['run']} "
+          "(post-hoc linked val CPM -> deployed <run>.pt)")
     return 0
 
 

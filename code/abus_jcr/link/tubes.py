@@ -47,12 +47,20 @@ def _iou_vec(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     return np.where(union > 0, inter / union, 0.0)
 
 
+def _box_centre(b: np.ndarray) -> Tuple[float, float]:
+    """Centre ``((x1+x2)/2, (y1+y2)/2)`` of one ``(x1,y1,x2,y2)`` box."""
+    return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+
+
 def link_tubes(
     det_df: pd.DataFrame,
     *,
     link_iou: float = C.LINK_IOU,
     max_z_gap: int = C.LINK_MAX_Z_GAP,
     min_tube_len: int = C.LINK_MIN_TUBE_LEN,
+    max_tube_zspan=C.LINK_MAX_TUBE_ZSPAN,
+    max_centroid_drift=C.LINK_MAX_CENTROID_DRIFT,
+    containment_thresh: float = C.LINK_CONTAINMENT_THRESH,
 ) -> List[Tube]:
     """Greedy, score-seeded Seq-NMS-style tube linking over ONE volume's detections.
 
@@ -63,10 +71,20 @@ def link_tubes(
        a. Seed = the highest-score unconsumed box.
        b. Extend FORWARD: from the current head at ``z``, look in slices
           ``z+1 .. z+max_z_gap+1``; pick the unconsumed box with the highest 2D IoU
-          ``>= link_iou`` to the head; append, consume, advance the head to it. Stop
-          when no slice within the gap yields a match.
+          ``>= link_iou`` to the head; if appending it would keep the tube within BOTH
+          drift caps (below), append, consume, advance the head to it. Stop when no
+          slice within the gap yields a match, OR the best match violates a cap.
        c. Extend BACKWARD symmetrically from the seed.
     3. Order each tube by ``slice_z``; drop tubes with ``< min_tube_len`` boxes.
+
+    [P3-UPDATE L1] Drift caps bound the reconstructed union hull, so a tube can no longer
+    random-walk across the whole volume and consume a real lesion's boxes (the pre-P3-UPDATE
+    linker produced whole-volume "candidates" and made linked recall non-monotone in the
+    threshold). ``max_tube_zspan`` caps ``max_z - min_z + 1``; ``max_centroid_drift`` caps a
+    candidate box's centre distance from the tube's running-mean centre. ``None`` = uncapped
+    (the pre-P3-UPDATE behaviour, kept for parity tests). Both are Train-GT-derived and frozen
+    at [3.3'] (Inv. 4), never per-detector. When the best-IoU candidate violates a cap the
+    extension STOPS (it does not fall through to a worse, more distant box).
 
     Input MUST be a single volume's rows (asserts one ``volume_id``). Returns the
     surviving tubes.
@@ -76,6 +94,14 @@ def link_tubes(
         return []
     vids = det_df["volume_id"].unique()
     assert len(vids) == 1, f"link_tubes expects one volume's rows, got volume_ids {list(vids)}"
+
+    # [P3-UPDATE L4] Per-slice containment suppression before linking: drops nested small-in-big
+    # duplicates the detector's IoU-NMS structurally cannot (single frozen aggregation, Inv. 4).
+    if containment_thresh < 1.0:
+        from .nms import containment_suppress_detections
+        det_df = containment_suppress_detections(det_df, containment_thresh)
+        if len(det_df) == 0:
+            return []
 
     # Deterministic global order: (slice_z, x1, y1, x2, y2) — the tie-break spec.
     recs = det_df[["slice_z", "x1", "y1", "x2", "y2", "score"]].to_numpy(dtype=float)
@@ -117,31 +143,55 @@ def link_tubes(
     # Seeds in descending score, ties by the deterministic global index order.
     seed_order = sorted(range(n), key=lambda i: (-scores[i], i))
 
+    zspan_cap = None if max_tube_zspan is None else int(max_tube_zspan)
+    drift_cap = None if max_centroid_drift is None else float(max_centroid_drift)
+
     tubes: List[Tube] = []
     for s in seed_order:
         if consumed[s]:
             continue
         consumed[s] = True
         members = [s]
+        # running tube state for the drift caps
+        min_z = max_z = int(zs[s])
+        cx0, cy0 = _box_centre(coords[s])
+        sum_cx, sum_cy, cnt = cx0, cy0, 1
+
+        def _within_caps(cand: int) -> bool:
+            """True iff appending ``cand`` keeps the tube inside both drift caps."""
+            if zspan_cap is not None:
+                zc = int(zs[cand])
+                if (max(max_z, zc) - min(min_z, zc) + 1) > zspan_cap:
+                    return False
+            if drift_cap is not None:
+                bx, by = _box_centre(coords[cand])
+                mx, my = sum_cx / cnt, sum_cy / cnt
+                if ((bx - mx) ** 2 + (by - my) ** 2) ** 0.5 > drift_cap:
+                    return False
+            return True
 
         head = s  # forward
         while True:
             z = int(zs[head])
             j = best_match(coords[head], z + 1, z + max_z_gap + 1)
-            if j == -1:
+            if j == -1 or not _within_caps(j):
                 break
             consumed[j] = True
             members.append(j)
+            min_z, max_z = min(min_z, int(zs[j])), max(max_z, int(zs[j]))
+            bx, by = _box_centre(coords[j]); sum_cx += bx; sum_cy += by; cnt += 1
             head = j
 
         head = s  # backward from the seed
         while True:
             z = int(zs[head])
             j = best_match(coords[head], z - max_z_gap - 1, z - 1)
-            if j == -1:
+            if j == -1 or not _within_caps(j):
                 break
             consumed[j] = True
             members.append(j)
+            min_z, max_z = min(min_z, int(zs[j])), max(max_z, int(zs[j]))
+            bx, by = _box_centre(coords[j]); sum_cx += bx; sum_cy += by; cnt += 1
             head = j
 
         if len(members) < min_tube_len:

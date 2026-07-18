@@ -82,12 +82,55 @@ def _lr_lambda(step: int, warmup_iters: int, warmup_factor: float, total_iters: 
     return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
+def _build_optimizer(model):
+    """[P3-UPDATE D4] Build the optimiser from ``C.DET_OPTIMIZER``.
+
+    AdamW splits params into two groups: norm-layer affine + all biases get
+    ``weight_decay = DET_NORM_WEIGHT_DECAY`` (0.0, matching torchvision's
+    ``--norm-weight-decay``), everything else gets the base ``weight_decay``. SGD is
+    still reachable behind the constant (veto path). Only trainable params are passed.
+    """
+    import torch
+    from torch import nn
+
+    spec = C.DET_OPTIMIZER
+    name = spec["name"].lower()
+    if name == "sgd":
+        return torch.optim.SGD(
+            [p for p in model.parameters() if p.requires_grad],
+            lr=spec["lr"], momentum=spec.get("momentum", 0.9),
+            weight_decay=spec.get("weight_decay", 0.0))
+
+    # AdamW: norm/bias params exempt from weight decay.
+    norm_types = (nn.GroupNorm, nn.LayerNorm, nn.BatchNorm2d)
+    norm_ids = set()
+    for m in model.modules():
+        if isinstance(m, norm_types):
+            for p in m.parameters(recurse=False):
+                norm_ids.add(id(p))
+    decay, no_decay = [], []
+    for pn, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if id(p) in norm_ids or pn.endswith(".bias"):
+            no_decay.append(p)
+        else:
+            decay.append(p)
+    groups = [
+        {"params": decay, "weight_decay": spec.get("weight_decay", 0.0)},
+        {"params": no_decay, "weight_decay": C.DET_NORM_WEIGHT_DECAY},
+    ]
+    return torch.optim.AdamW(groups, lr=spec["lr"])
+
+
 def _val_loss(model, loader, device) -> float:
     """Mean torchvision loss over Val slices, computed in train() mode under no_grad.
 
-    The model only returns losses when given targets; BN in the v2 backbone is
-    frozen (GroupNorm elsewhere), so train() mode here is a pure loss readout,
-    documented and accepted (Inv. 9 uses this only as the early-stop signal).
+    The model only returns losses when given targets. [P3-UPDATE D1] The backbone BN is
+    now ``FrozenBatchNorm2d`` (buffers never update) and every head norm is GroupNorm
+    (stateless), so ``train()`` mode here mutates NO running statistics — it is a genuine
+    pure loss readout. (Pre-P3-UPDATE the backbone used live BatchNorm2d and this call
+    silently overwrote its running stats with val data every epoch.) Diagnostic only.
     """
     import torch
 
@@ -160,13 +203,17 @@ def train_detector(
     slice_boxes_train: pd.DataFrame,
     slice_boxes_val: pd.DataFrame,
     out_root,
-    max_epochs: int = C.DET_MAX_EPOCHS,
-    patience: int = C.DET_EARLYSTOP_PATIENCE,
+    max_epochs: int = C.DET_TRAIN_EPOCHS,
     batch_size: int = C.DET_BATCH_SIZE,
     num_workers: int = 8,
     device: str = "cuda",
 ) -> Dict:
-    """Train one detector; return a summary ``dict`` and write its best checkpoint + jsonl log."""
+    """Train one detector on a fixed annealed schedule; save EVERY epoch + a jsonl log.
+
+    [P3-UPDATE D2/A1] No in-loop checkpoint selection or early stopping — every epoch is
+    written to ``checkpoints/<run>/epoch{e:02d}.pt`` and the deployed ``<run>.pt`` is chosen
+    POST-HOC on the true linked 3D val CPM by ``scripts/phase2_select_checkpoint.py`` (D3).
+    """
     import torch
     from torch.utils.data import DataLoader
 
@@ -175,9 +222,9 @@ def train_detector(
 
     run = f"retinanet_fold{fold_or_seed}" if regime == "fold" else f"retinanet_full_seed{fold_or_seed}"
     out_root = Path(out_root)
-    (out_root / "checkpoints").mkdir(parents=True, exist_ok=True)
+    epochs_dir = out_root / "checkpoints" / run   # per-epoch checkpoints (post-hoc selection reads these)
+    epochs_dir.mkdir(parents=True, exist_ok=True)
     (out_root / "logs").mkdir(parents=True, exist_ok=True)
-    ckpt_path = out_root / "checkpoints" / f"{run}.pt"
     log_path = out_root / "logs" / f"{run}.jsonl"
 
     tr_ids = train_volume_ids(manifest, regime, fold_or_seed)
@@ -191,24 +238,18 @@ def train_detector(
     model = build_retinanet(c_channels=C.C_CHANNELS, num_classes=C.DET_NUM_CLASSES, pretrained=True)
     model.to(device)
 
-    opt = torch.optim.SGD(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=C.DET_OPTIMIZER["lr"], momentum=C.DET_OPTIMIZER["momentum"],
-        weight_decay=C.DET_OPTIMIZER["weight_decay"],
-    )
+    opt = _build_optimizer(model)   # [P3-UPDATE D4] AdamW (v2 recipe) with norm/bias no-decay groups
     steps_per_epoch = math.ceil(len(train_ds) / batch_size)
     total_iters = max_epochs * steps_per_epoch
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: _lr_lambda(s, C.DET_LR_SCHEDULE["warmup_iters"],
                                   C.DET_LR_SCHEDULE["warmup_factor"], total_iters))
 
-    gt_df_val = _val_gt_df(slice_boxes_val, va_ids)   # [P2-UPDATE B5] selection target
-    n_slices_val = _n_val_slices(cache_root, va_ids)  # FP-per-slice denominator
+    gt_df_val = _val_gt_df(slice_boxes_val, va_ids)   # diagnostic proxy target (no longer selects)
+    n_slices_val = _n_val_slices(cache_root, va_ids)  # FP-per-slice denominator (diagnostic)
 
-    best_cpm = float("-inf")    # [P2-UPDATE B5] select on MAX val CPM-proxy (was: min val-loss)
-    best_epoch = -1
-    epochs_no_improve = 0
     global_step = 0
+    saved_epochs: List[int] = []
 
     with log_path.open("w") as logf:
         for epoch in range(max_epochs):
@@ -231,7 +272,7 @@ def train_detector(
             train_loss = running / max(1, nb)
 
             val_loss = _val_loss(model, val_loader, device)
-            # [P2-UPDATE B5] detection-metric selection: eval-mode val CPM-proxy (+ AP, recall logged).
+            # DIAGNOSTIC ONLY (P3-UPDATE A1/D3): the per-slice CPM-proxy + AP are logged, never selected on.
             vm = _val_detection_metrics(
                 model, cache_root, va_ids, gt_df_val, n_slices_val, device, batch_size)
             lr_now = opt.param_groups[0]["lr"]
@@ -244,19 +285,15 @@ def train_detector(
                   f"cpm_proxy {vm['val_cpm_proxy']:.4f}  val_ap {vm['val_ap']:.4f}  "
                   f"val_rec {vm['val_lesion_recall']:.4f}  lr {lr_now:.2e}")
 
-            if vm["val_cpm_proxy"] > best_cpm + 1e-6:
-                best_cpm = vm["val_cpm_proxy"]; best_epoch = epoch; epochs_no_improve = 0
-                cfg = {"regime": regime, "fold_or_seed": int(fold_or_seed), "seed": seed,
-                       "best_epoch": best_epoch, "best_val_cpm_proxy": best_cpm,
-                       "best_val_ap": vm["val_ap"], "best_val_loss": val_loss,
-                       "selection_metric": C.DET_SELECTION_METRIC}
-                save_checkpoint(ckpt_path, model, cfg)
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    print(f"[{run}] early stop at epoch {epoch} (best epoch {best_epoch}, "
-                          f"cpm_proxy {best_cpm:.4f})")
-                    break
+            # [P3-UPDATE D2] Save EVERY epoch; post-hoc selection (D3) picks the deployed <run>.pt.
+            cfg = {"regime": regime, "fold_or_seed": int(fold_or_seed), "seed": seed,
+                   "epoch": epoch, "val_cpm_proxy": vm["val_cpm_proxy"], "val_ap": vm["val_ap"],
+                   "val_loss": val_loss, "lr": lr_now,
+                   "selection_metric": C.DET_SELECTION_METRIC}
+            save_checkpoint(epochs_dir / f"epoch{epoch:02d}.pt", model, cfg)
+            saved_epochs.append(epoch)
 
-    return {"run": run, "checkpoint": str(ckpt_path), "log": str(log_path),
-            "best_epoch": best_epoch, "best_val_cpm_proxy": best_cpm, "epochs_ran": epoch + 1}
+    return {"run": run, "epochs_dir": str(epochs_dir), "log": str(log_path),
+            "epochs_ran": len(saved_epochs), "saved_epochs": saved_epochs,
+            "select_min_epoch": C.DET_SELECT_MIN_EPOCH,
+            "note": "run scripts/phase2_select_checkpoint.py to pick the deployed <run>.pt (post-hoc linked val CPM)"}

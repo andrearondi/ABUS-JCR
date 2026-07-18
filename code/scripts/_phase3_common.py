@@ -98,6 +98,9 @@ def linked_recall(
     link_iou: float = C.LINK_IOU,
     max_z_gap: int = C.LINK_MAX_Z_GAP,
     min_tube_len: int = C.LINK_MIN_TUBE_LEN,
+    max_tube_zspan=C.LINK_MAX_TUBE_ZSPAN,
+    max_centroid_drift=C.LINK_MAX_CENTROID_DRIFT,
+    containment_thresh: float = C.LINK_CONTAINMENT_THRESH,
     hit_iou: float = C.IOU_HIT_THRESHOLD,
 ) -> Dict:
     """Linked 3D recall + pool size over a set of volumes (torch-free; the sweep crux).
@@ -106,13 +109,16 @@ def linked_recall(
     tube to an official box, and count the volume HIT iff any candidate reaches
     ``iou_official > hit_iou`` (== the FROC/labeling hit rule, Inv. 3). Returns
     ``{recall, n_hit, n_vol, cands_per_vol_mean, cands_per_vol_median, pool_total}``.
+    Passes the P3-UPDATE drift caps + containment through so [3.3'] can sweep them.
     """
     n_vol = len(det_by_vid)
     n_hit = 0
     pool_sizes: List[int] = []
     for vid, det_df in det_by_vid.items():
         tubes = link_tubes(det_df, link_iou=link_iou, max_z_gap=max_z_gap,
-                           min_tube_len=min_tube_len)
+                           min_tube_len=min_tube_len, max_tube_zspan=max_tube_zspan,
+                           max_centroid_drift=max_centroid_drift,
+                           containment_thresh=containment_thresh)
         pool_sizes.append(len(tubes))
         gt = gt_by_vid[int(vid)]
         meta = meta_by_vid[int(vid)]
@@ -131,6 +137,57 @@ def linked_recall(
         "cands_per_vol_mean": float(pool.mean()) if pool.size else float("nan"),
         "cands_per_vol_median": float(np.median(pool)) if pool.size else float("nan"),
         "pool_total": int(pool.sum()) if pool.size else 0,
+    }
+
+
+def monotonicity_violations(threshs: Sequence[float], recalls: Sequence[float],
+                            tol: float = 1e-9) -> List[dict]:
+    """[P3-UPDATE L2] Detect non-monotone linked recall — the fingerprint of an unsound linker.
+
+    A sound aggregation is a superset relation: LOWERING ``op_score_thresh`` adds detections,
+    which can only keep or raise linked recall. Sorting the sweep by DESCENDING threshold,
+    recall must be non-decreasing. Returns the list of adjacent (higher->lower threshold) steps
+    where recall DROPPED by more than ``tol`` — empty iff the curve is monotone. Torch-free.
+    """
+    idx = sorted(range(len(threshs)), key=lambda i: -float(threshs[i]))  # descending threshold
+    out: List[dict] = []
+    for a, b in zip(idx, idx[1:]):   # a = higher thresh, b = next-lower thresh (more boxes)
+        if float(recalls[b]) < float(recalls[a]) - tol:
+            out.append({"thresh_hi": float(threshs[a]), "thresh_lo": float(threshs[b]),
+                        "recall_hi": float(recalls[a]), "recall_lo": float(recalls[b]),
+                        "drop": float(recalls[a]) - float(recalls[b])})
+    return out
+
+
+def derive_link_caps(slice_boxes_train: pd.DataFrame,
+                     zspan_safety: float = 1.8, drift_safety: float = 1.5) -> dict:
+    """[P3-UPDATE L1] Derive the Train-GT tube drift caps (iso space; no leakage, Inv. 4).
+
+    Both caps are computed from the Phase-1 Train union GT boxes (already iso-space, so directly
+    comparable to a tube's z-span and box-centre drift):
+      - ``LINK_MAX_TUBE_ZSPAN``     = round(``zspan_safety`` * p99 of per-volume lesion z-extent
+        in iso slices) — a lesion cannot span more slices than this.
+      - ``LINK_MAX_CENTROID_DRIFT`` = round(``drift_safety`` * p99 of per-box in-plane extent
+        max(width,height) in iso px) — a tube's boxes cannot wander farther than a lesion's own
+        in-plane size.
+    Single-lesion dominance (99/100 Train) makes the per-volume z-extent exact for all but the
+    multifocal case; the safety factor absorbs it. Returns the derived ints + the percentiles.
+    """
+    df = slice_boxes_train
+    zspans = []
+    for _vid, grp in df.groupby("volume_id", sort=False):
+        zs = grp["slice_z"].to_numpy()
+        zspans.append(int(zs.max() - zs.min() + 1))
+    widths = (df["c1"].to_numpy() - df["c0"].to_numpy() + 1)
+    heights = (df["r1"].to_numpy() - df["r0"].to_numpy() + 1)
+    inplane = np.maximum(widths, heights).astype(float)
+    z_p99 = float(np.percentile(np.asarray(zspans, dtype=float), 99)) if zspans else float("nan")
+    e_p99 = float(np.percentile(inplane, 99)) if len(inplane) else float("nan")
+    return {
+        "zspan_p99": z_p99, "inplane_extent_p99": e_p99,
+        "LINK_MAX_TUBE_ZSPAN": int(round(zspan_safety * z_p99)),
+        "LINK_MAX_CENTROID_DRIFT": int(round(drift_safety * e_p99)),
+        "zspan_safety": zspan_safety, "drift_safety": drift_safety,
     }
 
 

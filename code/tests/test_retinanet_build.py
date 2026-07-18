@@ -68,6 +68,45 @@ def test_checkpoint_round_trip_preserves_matcher_thresholds(tmp_path):
     assert m2.proposal_matcher.low_threshold == 0.3
 
 
+def test_backbone_bn_is_frozen():
+    # [P3-UPDATE D1] no live BatchNorm2d survives under the backbone (v2 default was live BN).
+    from torch import nn
+    m = _small_model(3)
+    live_bn = [n for n, mod in m.backbone.named_modules() if isinstance(mod, nn.BatchNorm2d)]
+    assert live_bn == [], f"live BatchNorm2d left in backbone: {live_bn[:3]}..."
+
+
+def test_train_forward_does_not_mutate_backbone_buffers():
+    # [P3-UPDATE D1] a train()-mode forward must leave every backbone buffer bit-identical.
+    m = _small_model(3).train()
+    before = {k: v.clone() for k, v in m.backbone.state_dict().items() if "running" in k or "num_batches" in k}
+    img = torch.rand(3, 64, 64)
+    target = {"boxes": torch.tensor([[5.0, 5.0, 20.0, 25.0]]), "labels": torch.tensor([C.DET_FG_LABEL])}
+    _ = m([img], [target])
+    after = m.backbone.state_dict()
+    for k, v in before.items():
+        assert torch.equal(v, after[k]), f"backbone buffer {k} mutated by a train() forward"
+
+
+def test_regression_head_uses_giou():
+    # [P3-UPDATE D5] the head rebuild must restore giou (default of the rebuilt head is l1).
+    m = _small_model(3)
+    assert m.head.regression_head._loss_type == "giou"
+
+
+def test_atss_assigner_trains_a_finite_loss(monkeypatch):
+    # [P3-UPDATE D6] DET_ASSIGNER="atss" builds the ATSS subclass and a train step is finite.
+    monkeypatch.setattr(C, "DET_ASSIGNER", "atss")
+    m = _small_model(3).train()
+    assert m._build_cfg["assigner"] == "atss"
+    img = torch.rand(3, 64, 64)
+    target = {"boxes": torch.tensor([[5.0, 5.0, 40.0, 40.0]]), "labels": torch.tensor([C.DET_FG_LABEL])}
+    losses = m([img], [target])
+    total = sum(losses.values())
+    assert torch.isfinite(total), losses
+    total.backward()
+
+
 def test_transform_uses_iso_frame_sizes_and_channel_norm():
     m = _small_model(3)
     assert m.transform.min_size == (64,)

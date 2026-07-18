@@ -102,13 +102,17 @@ def val_ap_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, iou_thresh: float = 0.3
 
 def recall_at_fp_budgets_2d(det_df: pd.DataFrame, gt_df: pd.DataFrame, n_slices: int,
                             budgets=C.DET_SELECTION_FP_BUDGETS, iou_thresh: float = 0.30):
-    """2D CPM-proxy: per-slice recall at each fixed FP/slice budget + their mean.
+    """2D CPM-proxy: per-slice recall at each fixed FP/SLICE budget + their mean.
 
-    For budget ``B``, the operating threshold is where cumulative FP == ``B * n_slices``
-    (reading recall in the FP regime we deploy at, unlike AP which averages over all
-    regimes). Returns ``(mean_recall, {budget: recall})``. The mean is the selection
-    signal (Inv. 2 amended) — a pre-linking foreshadow of the Inv.-3 CPM. Empty GT:
-    1.0 iff no detections else 0.0, at every budget.
+    For budget ``B``, the operating threshold is where cumulative FP == ``B * n_slices``.
+    Returns ``(mean_recall, {budget: recall})``.
+
+    **[P3-UPDATE D3/A1] LOGGED DIAGNOSTIC ONLY — this no longer selects checkpoints.** The
+    budgets are per-SLICE, so with ~12.2k val slices / 30 volumes they span ~50–3254 FP per
+    VOLUME — a regime the Inv.-3 CPM metric (0.125–8 FP/volume) never visits, and one that
+    rewards flooding. Checkpoint selection is now post-hoc on the true linked 3D val CPM
+    (``scripts/phase2_select_checkpoint.py``). Kept here only as a training-curve diagnostic.
+    Empty GT: 1.0 iff no detections else 0.0, at every budget.
     """
     budgets = tuple(float(b) for b in budgets)
     total_gt = int(len(gt_df))

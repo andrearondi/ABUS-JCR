@@ -23,6 +23,43 @@ def _anchor_sizes(base_sizes) -> Tuple[Tuple[int, int, int], ...]:
     return tuple((int(s), int(s * 2 ** (1 / 3)), int(s * 2 ** (2 / 3))) for s in base_sizes)
 
 
+def _freeze_backbone_bn(model) -> str:
+    """Replace every ``nn.BatchNorm2d`` in the backbone with ``FrozenBatchNorm2d``.
+
+    [P3-UPDATE D1] ``retinanet_resnet50_fpn_v2`` builds the ResNet-50 backbone with
+    **live** ``nn.BatchNorm2d`` (v1 uses ``FrozenBatchNorm2d``; the v2 factory dropped it
+    because its reference recipe used ``--sync-bn`` over a large effective batch). At batch
+    8 with no sync-bn, and with ``_val_loss`` forwarding val slices in ``train()`` mode,
+    the backbone BN running statistics were being overwritten with validation data every
+    epoch (``requires_grad_(False)`` freezes *parameters*, not the BN *buffers*). Converting
+    to ``FrozenBatchNorm2d`` — carrying the COCO ``weight/bias/running_mean/running_var`` —
+    makes the backbone a pure function of its input (what v1 does by construction) and is the
+    correct choice for small-batch fine-tuning. The GroupNorm heads are stateless and are
+    left untouched. Idempotent. Returns a description recorded in the build cfg.
+    """
+    from torch import nn
+    from torchvision.ops.misc import FrozenBatchNorm2d
+
+    n_converted = 0
+
+    def convert(module):
+        nonlocal n_converted
+        for name, child in module.named_children():
+            if isinstance(child, nn.BatchNorm2d):
+                fbn = FrozenBatchNorm2d(child.num_features, eps=child.eps)
+                fbn.weight.data.copy_(child.weight.data)
+                fbn.bias.data.copy_(child.bias.data)
+                fbn.running_mean.data.copy_(child.running_mean.data)
+                fbn.running_var.data.copy_(child.running_var.data)
+                setattr(module, name, fbn)
+                n_converted += 1
+            else:
+                convert(child)
+
+    convert(model.backbone)
+    return f"froze {n_converted} backbone BatchNorm2d -> FrozenBatchNorm2d (COCO stats preserved)"
+
+
 def _adapt_stem(model, c_channels: int) -> str:
     """Adapt ``backbone.body.conv1`` (7x7, 3->64) to ``c_channels`` inputs.
 
@@ -85,6 +122,7 @@ def build_retinanet(
     model = retinanet_resnet50_fpn_v2(weights=weights, weights_backbone=weights_backbone)
 
     stem_branch = _adapt_stem(model, c_channels)
+    bn_branch = _freeze_backbone_bn(model)   # [P3-UPDATE D1] kill the live-BN corruption
 
     # --- anchors: Train-derived iso-pixel scales, 5 FPN levels ---
     sizes = _anchor_sizes(base_sizes)
@@ -99,6 +137,9 @@ def build_retinanet(
         in_channels, num_anchors, num_classes, norm_layer=norm_layer)
     model.head.regression_head = RetinaNetRegressionHead(
         in_channels, num_anchors, norm_layer=norm_layer)
+    # [P3-UPDATE D5] The rebuilt regression head defaults to _loss_type="l1"; the torchvision v2
+    # factory sets "giou" *after* construction, so our rebuild silently reverted it. Restore it.
+    model.head.regression_head._loss_type = "giou"
 
     # --- [P2-UPDATE B2] anchor<->GT matcher: explicit (loosened) thresholds ---
     # torchvision's default (0.5/0.4, never set) starved the cls head of positives on
@@ -131,7 +172,16 @@ def build_retinanet(
         "fg_iou_thresh": fg_iou_thresh,
         "bg_iou_thresh": bg_iou_thresh,
         "stem_branch": stem_branch,
+        "backbone_bn": "frozen",          # [P3-UPDATE D1]
+        "bn_branch": bn_branch,
+        "reg_loss": "giou",               # [P3-UPDATE D5]
+        "assigner": C.DET_ASSIGNER,       # [P3-UPDATE D6]
     }
+    # [P3-UPDATE D6] Optionally swap the fixed IoU matcher for ATSS adaptive assignment. Default
+    # "fixed" leaves the model exactly as built above; "atss" re-parents to the ATSS loss subclass.
+    if C.DET_ASSIGNER == "atss":
+        from .atss import build_retinanet_atss
+        model = build_retinanet_atss(model)
     return model
 
 
