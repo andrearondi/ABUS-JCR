@@ -146,7 +146,9 @@ DET_BG_IOU_THRESH       = 0.3      # anchor IoU <  this -> negative (was default
 # [P3-UPDATE D6] Anchor<->GT assignment. "fixed" = the torchvision IoU Matcher above (DEFAULT).
 # "atss" = adaptive per-GT threshold (abus_jcr/detect/atss.py) — fired ONLY if [D0] anchor coverage
 # shows starvation or the Stage-1 gate underperforms. nnDetection ran BCE+ATSS on this dataset (0.7704).
-DET_ASSIGNER            = "fixed"  # {"fixed","atss"}
+DET_ASSIGNER            = "atss"   # {"fixed","atss"} — [P3U.3] D0 gate FIRED (2026-07-18): ~19% of Train
+                                   # GT boxes get 0 fg-clearing anchors ([0,16) 99.8% zero, [16,32) 42.6%),
+                                   # a structural fixed-IoU starvation D1-D5 can't touch. ATSS = training-only.
 DET_ATSS_TOPK           = 9        # ATSS k (per FPN level); paper-flat over 7..19
 # Diagnostic-dump inference knobs (NOT the Phase-3 operating point; permissive so the dump is informative)
 DET_DIAG_SCORE_THRESH   = 0.05
