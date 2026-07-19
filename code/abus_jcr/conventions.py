@@ -176,9 +176,15 @@ DET_MAX_EPOCHS          = DET_TRAIN_EPOCHS   # back-compat alias (retired; use D
 # proxy. The per-slice CPM-proxy below is kept as a LOGGED DIAGNOSTIC only (it drives nothing) — its
 # per-slice FP budgets span 50-3254 FP/volume, a regime the Inv.-3 metric (0.125-8 FP/vol) never visits.
 DET_SELECTION_METRIC    = "val_linked_cpm_3d@0.3_posthoc"
-DET_SELECT_MIN_EPOCH    = 15       # only epochs >= this (the annealed half) are candidates for selection,
-                                   # so a lucky high-LR early epoch cannot be picked.
-DET_SELECT_OP_THRESH    = 0.03     # fixed reference operating point for the post-hoc selection sweep
+# [P3-UPDATE D3, revised 2026-07-19] The AdamW recipe converges by ~epoch 6 then OVERFITS (val-loss
+# U-shape), so the old min_epoch=15 floor selected the overfit tail. Floor lowered to 3 (skip only the
+# pre-convergence epochs 0-2); the selector still EVALUATES + prints epochs from 0 for completeness.
+DET_SELECT_MIN_EPOCH    = 3        # earliest epoch eligible for SELECTION (0-2 shown but not selectable)
+DET_SELECT_CPM_TOL      = 0.02     # CPM within this of the max is a tie on 30 val lesions (~1/30 step);
+                                   # break such ties on the highest recall ceiling, then earliest epoch.
+DET_SELECT_OP_THRESH    = 0.03     # reference op for post-hoc selection. NOTE (P3U): the retrained detector
+                                   # de-compressed its scores, so 0.03 sits ABOVE its recall knee — after
+                                   # [P3U.4b] reveals the saturating op, set this to it and re-select Stage-2.
 DET_SELECTION_FP_BUDGETS = (0.125, 0.25, 0.5, 1, 2, 4, 8)  # per-SLICE FP budgets for the LOGGED diagnostic
                                    # proxy only (mirror KEY_FP's numbers; NOT the Inv.-3 per-volume metric).
 DET_EARLYSTOP_PATIENCE  = 10       # RETIRED (P3-UPDATE D2): no early stopping. Kept for back-compat only.

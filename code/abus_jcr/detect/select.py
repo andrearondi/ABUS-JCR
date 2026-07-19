@@ -5,26 +5,40 @@ the torch-free selection rule so it is unit-tested on the laptop: given each con
 epoch's linked val CPM, pick the deployed checkpoint. The heavy detect->link->oracle CPM
 computation lives in ``scripts/phase2_select_checkpoint.py``; the *decision* lives here.
 
-Selection rule (A1): among epochs ``>= min_epoch`` (the annealed half of the fixed
-schedule — so a lucky high-LR early epoch can never be picked), take the max linked CPM,
-tie-broken toward the LATER (more-annealed) epoch. This removes the two mechanisms that
-made the pre-P3-UPDATE per-epoch AP/loss selection pick noise on the 30-lesion val set.
+Selection rule (A1, revised 2026-07-19). The pre-P3-UPDATE ``min_epoch=15`` floor assumed
+the old SGD-lr-0.01 dynamics where early epochs were high-LR noise. The D4 recipe (AdamW 1e-4
++ frozen BN) inverts that: it converges by ~epoch 6 and then OVERFITS (val-loss U-shape), so
+the annealed *late* epochs are the overfit tail. The revised rule:
+
+  1. Only epochs ``>= min_epoch`` (a small floor, e.g. 3, that skips the pre-convergence
+     epochs 0-2 — NOT the "annealed half") are selection-eligible.
+  2. On a 30-lesion val set, CPM differences of a few 0.001 are noise (CPM moves in ~1/30
+     steps). So among epochs whose CPM is within ``cpm_tol`` of the max, tie-break on the
+     **highest recall ceiling** (the Inv.-8 hard cap — the rescorer can re-rank the pool but
+     can never recover a lesion that isn't in it), then the **earliest** epoch (least overfit).
+
+This reproduces the seed0 evidence, where the bare CPM-argmax picked epoch 10 (CPM 0.4798,
+ceiling 0.700) over epoch 6 (0.4779, ceiling 0.833) by a 0.002 noise margin while epoch 6 was
+the peak of val-loss/val-AP/cpm-proxy AND held 4 more lesions of ceiling.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+import math
+from typing import Dict, Optional, Tuple
 
 
-def select_epoch(epoch_cpms: Dict[int, float], min_epoch: int) -> int:
-    """Return the epoch with the max CPM among ``epoch >= min_epoch``; ties -> later epoch.
+def select_epoch(epoch_cpms: Dict[int, float], min_epoch: int,
+                 epoch_ceilings: Optional[Dict[int, float]] = None,
+                 cpm_tol: float = 0.0) -> int:
+    """Select the deployed epoch among ``epoch >= min_epoch`` (A1 revised).
 
-    ``epoch_cpms`` maps epoch index -> linked val CPM. Raises if no epoch qualifies (the
-    caller must have trained at least ``min_epoch + 1`` epochs). NaN CPMs are ignored; if
-    every candidate CPM is NaN, the latest qualifying epoch is returned (a defined fallback).
+    ``epoch_cpms`` maps epoch -> linked val CPM. If ``epoch_ceilings`` is given and
+    ``cpm_tol > 0``: among epochs whose CPM is within ``cpm_tol`` of the max, pick the
+    **highest recall ceiling**, tie-broken toward the **earliest** epoch. Otherwise: max CPM,
+    tie-broken toward the later epoch (legacy behaviour). Raises if no epoch qualifies. NaN
+    CPMs are ignored; all-NaN -> the latest qualifying epoch (defined fallback).
     """
-    import math
-
     cands = {e: c for e, c in epoch_cpms.items() if int(e) >= int(min_epoch)}
     if not cands:
         raise ValueError(
@@ -32,8 +46,19 @@ def select_epoch(epoch_cpms: Dict[int, float], min_epoch: int) -> int:
             "train at least min_epoch+1 epochs")
     finite = {e: c for e, c in cands.items() if c is not None and not math.isnan(float(c))}
     if not finite:
-        return max(cands)  # all-NaN fallback: the most-annealed epoch
-    # max CPM, tie-broken toward the later epoch: sort by (cpm, epoch) descending.
+        return max(cands)  # all-NaN fallback: the latest epoch
+
+    max_cpm = max(finite.values())
+    if epoch_ceilings is not None and cpm_tol > 0.0:
+        def _ceil(e):
+            v = epoch_ceilings.get(e)
+            return float(v) if (v is not None and not math.isnan(float(v))) else float("-inf")
+        band = [e for e, c in finite.items() if float(c) >= max_cpm - float(cpm_tol)]
+        # highest ceiling, then earliest epoch (least overfit)
+        best_e = min(band, key=lambda e: (-_ceil(e), int(e)))
+        return int(best_e)
+
+    # legacy: max CPM, tie-broken toward the later epoch
     best_e, _ = max(finite.items(), key=lambda kv: (float(kv[1]), int(kv[0])))
     return int(best_e)
 
