@@ -224,8 +224,8 @@ LINK_SCORE_AGG      = "max"  # per-tube baseline score = peak per-slice score (I
 # 1154.1 volume diagonal; z_span max 414 in a ~407-slice volume) that consumed real lesions' boxes and
 # made linked recall NON-MONOTONE in the threshold. Both caps are Train-GT-derived at [3.3'] (no leakage,
 # not per-detector — Inv. 4). None = uncapped (asserted-set before the frozen generation run).
-LINK_MAX_TUBE_ZSPAN     = None   # set at [3.3']: round(1.8 * Train GT z-extent p99, iso slices)
-LINK_MAX_CENTROID_DRIFT = None   # set at [3.3']: round(1.5 * Train GT in-plane extent p99, iso px)
+LINK_MAX_TUBE_ZSPAN     = 182   # set at [3.3']: round(1.8 * Train GT z-extent p99, iso slices)
+LINK_MAX_CENTROID_DRIFT = 342   # set at [3.3']: round(1.5 * Train GT in-plane extent p99, iso px)
 # --- Phase 3 (B): candidate-generation operating point (per-slice read-off; calibrated on VAL) ---
 LINK_NMS_THRESH        = 0.70   # PROVISIONAL: swept {0.5,0.6,0.7} at [3.3'], freeze the recall-neutral min
                                 # (MONAI medical RetinaNet uses 0.22; 0.5 is conservative). Loosened, not
