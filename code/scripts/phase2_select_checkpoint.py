@@ -96,6 +96,9 @@ def main() -> int:
     parser.add_argument("--cpm-tol", type=float, default=C.DET_SELECT_CPM_TOL,
                         help="CPM within this of the max is a tie -> break on highest recall ceiling")
     parser.add_argument("--no-cache", action="store_true", help="force re-detect (ignore cache)")
+    parser.add_argument("--no-deploy", action="store_true",
+                        help="report + write the selection JSON but do NOT overwrite the deployed <run>.pt "
+                             "(verification-only; e.g. [P3U.4e] confirming the ceiling-aware pick)")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -179,8 +182,11 @@ def main() -> int:
 
     # Deploy: copy the winning epoch to the byte-stable <run>.pt Phase 3 loads.
     deployed = Path(args.phase2_out) / "checkpoints" / f"{run}.pt"
-    shutil.copyfile(epochs_dir / f"epoch{best_e:02d}.pt", deployed)
-    print(f"\ndeployed -> {deployed}  (from epoch{best_e:02d}.pt)")
+    if args.no_deploy:
+        print(f"\n[--no-deploy] would deploy epoch{best_e:02d}.pt -> {deployed} (NOT copied; verification-only)")
+    else:
+        shutil.copyfile(epochs_dir / f"epoch{best_e:02d}.pt", deployed)
+        print(f"\ndeployed -> {deployed}  (from epoch{best_e:02d}.pt)")
 
     out_dir = Path(args.out_root) / "selection"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +196,8 @@ def main() -> int:
                "selected_epoch": best_e, "selected_cpm": rows[best_e]["cpm"],
                "selected_ceiling": rows[best_e]["ceiling"],
                "ci": {"lo": ci["lo"], "hi": ci["hi"], "point": ci["point"]},
-               "top3": top, "spread": spread, "deployed": str(deployed)}
+               "top3": top, "spread": spread,
+               "deployed": None if args.no_deploy else str(deployed)}
     (out_dir / f"select_{run}.json").write_text(json.dumps(payload, indent=2))
     print(f"json = {out_dir / f'select_{run}.json'}")
     return 0
