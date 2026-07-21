@@ -242,8 +242,11 @@ LINK_CONTAINMENT_THRESH = 0.80  # [P3-UPDATE L4] per-slice containment suppressi
                                 # duplicates IoU-NMS structurally cannot (IoU(small,big)=area_small/area_big).
 LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 300)
 LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the ranking-aware VAL operating point in [3.4'], RECORD
-PREFILTER_SCORE_FLOOR  = 0.0    # optional tube score_max floor (NoduleSAT-style); raised only to meet the
-                                # pool budget; RECORD its recall cost (0.0 = off)
+PREFILTER_SCORE_FLOOR  = 0.0    # [P3U2] LUNA/NoduleSAT-style per-candidate score_max floor: drop tubes whose
+                                # peak per-slice score < this, applied BEFORE the 3D NMS, in EVERY pool path
+                                # (generate, linked_recall, select, calibrate, reducer gate). The primary pool
+                                # lever when the FP pool is a low-confidence tail — pick from the
+                                # phase3_candidate_diagnostics floor sweep; RECORD its recall cost (0.0 = off).
 # [P3U2 3.B] TWO pool numbers. The pool the Phase-4 O(n^2) set module consumes must be LOW HUNDREDS,
 # not the ~2000 MEMORY ceiling: PHASE_4 §1.3 is designed for "tens", and NoduleSAT/Liao/PAIR-Former
 # pre-filter to a small high-value set (the geometry/Axis-A signal dilutes and overfits at n~1000 on

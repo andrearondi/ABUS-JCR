@@ -65,6 +65,9 @@ def _linked_cpm(det_by_vid, gt_by_vid, meta_by_vid, gt_used):
         meta = meta_by_vid[int(vid)]
         offs = [iso_tube_to_official(t, meta) for t in tubes]
         scs = [float(score_stats(t)["score_max"]) for t in tubes]
+        if C.PREFILTER_SCORE_FLOOR > 0.0:           # [P3U2] LUNA-style floor before 3D NMS (deployed order)
+            keep0 = [i for i, sc in enumerate(scs) if sc >= C.PREFILTER_SCORE_FLOOR]
+            offs = [offs[i] for i in keep0]; scs = [scs[i] for i in keep0]
         kept = reduce_pool_3dnms(offs, scs)         # [P3U2 3.C] deployed pool (None -> all)
         pools.append(len(kept))
         hit = False

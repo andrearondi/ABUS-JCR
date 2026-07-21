@@ -53,14 +53,17 @@ def _cfg_label(contain: float, nms) -> str:
     return f"contain={c},nms={n}"
 
 
-def _link_eval(det_by_vid, gt_by_vid, meta_by_vid, contain: float, nms):
-    """(recall, pool_mean, pool_max, {vid: hit}) at the fixed op, post-3D-NMS."""
+def _link_eval(det_by_vid, gt_by_vid, meta_by_vid, contain: float, nms, score_floor: float = 0.0):
+    """(recall, pool_mean, pool_max, {vid: hit}) at the fixed op, post-(score-floor then 3D-NMS)."""
     hits, pools = {}, []
     for vid, raw in det_by_vid.items():
         tubes = link_tubes(raw, containment_thresh=contain)
         meta = meta_by_vid[vid]; gt = gt_by_vid[vid]
         offs = [iso_tube_to_official(t, meta) for t in tubes]
         scs = [float(score_stats(t)["score_max"]) for t in tubes]
+        if score_floor > 0.0:                                # LUNA-style tail trim BEFORE 3D NMS
+            keep0 = [i for i, sc in enumerate(scs) if sc >= score_floor]
+            offs = [offs[i] for i in keep0]; scs = [scs[i] for i in keep0]
         kept = reduce_pool_3dnms(offs, scs, iou_thr=nms)     # membership-only; None -> all
         pools.append(len(kept))
         hits[vid] = any(iou_official(offs[i], gt) > C.IOU_HIT_THRESHOLD for i in kept)
@@ -79,6 +82,9 @@ def main() -> int:
                         help="operating point to analyse (default DET_SELECT_OP_THRESH; the recall peak)")
     parser.add_argument("--detect-op", type=float, default=0.005,
                         help="detector run threshold (default 0.005 to match the [P3U.4b] cache)")
+    parser.add_argument("--score-floor", type=float, default=float(C.PREFILTER_SCORE_FLOOR),
+                        help="LUNA-style per-candidate score_max floor applied to ALL configs before 3D NMS "
+                             "(default conventions.PREFILTER_SCORE_FLOOR; pick from the candidate-diagnostics floor sweep)")
     parser.add_argument("--target-recall", type=float, default=0.90,
                         help="acceptance recall for the recommendation (default 0.90; aim 0.93)")
     parser.add_argument("--budget", type=float, default=float(C.RESCORER_POOL_BUDGET),
@@ -115,10 +121,13 @@ def main() -> int:
         print(f"  [detect] vol {v} ({k}/{len(val_ids)}): raw={len(det_by_vid[v])} @op{args.op_thresh}", flush=True)
     del model
 
+    if args.score_floor > 0.0:
+        print(f"  (LUNA-style score_max floor = {args.score_floor} applied to all configs before 3D NMS)\n")
     results = {}
     for contain in CONTAINMENTS:
         for nms in NMS_IOUS:
-            results[_cfg_label(contain, nms)] = _link_eval(det_by_vid, gt_by_vid, meta_by_vid, contain, nms)
+            results[_cfg_label(contain, nms)] = _link_eval(det_by_vid, gt_by_vid, meta_by_vid,
+                                                           contain, nms, score_floor=args.score_floor)
 
     # targets = the lesions the FROZEN (contain=0.80, nms=off) config misses (auto-detected).
     frozen_key = _cfg_label(0.80, None)

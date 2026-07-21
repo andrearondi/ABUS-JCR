@@ -104,6 +104,7 @@ def linked_recall(
     max_centroid_drift=C.LINK_MAX_CENTROID_DRIFT,
     containment_thresh: float = C.LINK_CONTAINMENT_THRESH,
     nms_iou=C.LINK_3DNMS_IOU,
+    score_floor: float = C.PREFILTER_SCORE_FLOOR,
     hit_iou: float = C.IOU_HIT_THRESHOLD,
 ) -> Dict:
     """Linked 3D recall + pool size over a set of volumes (torch-free; the sweep crux).
@@ -128,6 +129,11 @@ def linked_recall(
         meta = meta_by_vid[int(vid)]
         offs = [iso_tube_to_official(t, meta) for t in tubes]
         scs = [float(score_stats(t)["score_max"]) for t in tubes]
+        # [P3U2] LUNA-style per-candidate score_max floor BEFORE the 3D-NMS reduction (deployed-pool order:
+        # generate applies PREFILTER_SCORE_FLOOR then 3D NMS, so recall/pool here match candidate generation).
+        if score_floor > 0.0:
+            keep0 = [i for i, sc in enumerate(scs) if sc >= score_floor]
+            offs = [offs[i] for i in keep0]; scs = [scs[i] for i in keep0]
         kept = reduce_pool_3dnms(offs, scs, iou_thr=nms_iou)
         pool_sizes.append(len(kept))
         hit = any(iou_official(offs[i], gt) > hit_iou for i in kept)
