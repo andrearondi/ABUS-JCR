@@ -25,6 +25,8 @@ from abus_jcr.geometry import iou_official
 from abus_jcr.detect import schema as S
 from abus_jcr.link.tubes import link_tubes
 from abus_jcr.link.reconstruct import iso_tube_to_official
+from abus_jcr.link.aggregate import score_stats
+from abus_jcr.link.nms import reduce_pool_3dnms
 
 DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs/phase1"
 DEFAULT_PHASE2_OUT = "/home/maia-user/Andre2/outputs/phase2"
@@ -101,15 +103,18 @@ def linked_recall(
     max_tube_zspan=C.LINK_MAX_TUBE_ZSPAN,
     max_centroid_drift=C.LINK_MAX_CENTROID_DRIFT,
     containment_thresh: float = C.LINK_CONTAINMENT_THRESH,
+    nms_iou=C.LINK_3DNMS_IOU,
     hit_iou: float = C.IOU_HIT_THRESHOLD,
 ) -> Dict:
     """Linked 3D recall + pool size over a set of volumes (torch-free; the sweep crux).
 
     For each volume: link its (already-computed) detections into tubes, reconstruct each
-    tube to an official box, and count the volume HIT iff any candidate reaches
-    ``iou_official > hit_iou`` (== the FROC/labeling hit rule, Inv. 3). Returns
-    ``{recall, n_hit, n_vol, cands_per_vol_mean, cands_per_vol_median, pool_total}``.
-    Passes the P3-UPDATE drift caps + containment through so [3.3'] can sweep them.
+    tube to an official box, apply the [P3U2 3.C] membership-only 3D-NMS reduction
+    (``nms_iou``; None -> keep all), and count the volume HIT iff any SURVIVING candidate
+    reaches ``iou_official > hit_iou`` (== the FROC/labeling hit rule, Inv. 3). Returns
+    ``{recall, n_hit, n_vol, cands_per_vol_mean, cands_per_vol_median, pool_total}`` on
+    the deployed (post-NMS) pool. Passes the P3-UPDATE drift caps + containment + the
+    3D-NMS IoU through so [3.3']/[P3U2.7]/the reducer gate can sweep them.
     """
     n_vol = len(det_by_vid)
     n_hit = 0
@@ -119,15 +124,13 @@ def linked_recall(
                            min_tube_len=min_tube_len, max_tube_zspan=max_tube_zspan,
                            max_centroid_drift=max_centroid_drift,
                            containment_thresh=containment_thresh)
-        pool_sizes.append(len(tubes))
         gt = gt_by_vid[int(vid)]
         meta = meta_by_vid[int(vid)]
-        hit = False
-        for tube in tubes:
-            official = iso_tube_to_official(tube, meta)
-            if iou_official(official, gt) > hit_iou:
-                hit = True
-                break
+        offs = [iso_tube_to_official(t, meta) for t in tubes]
+        scs = [float(score_stats(t)["score_max"]) for t in tubes]
+        kept = reduce_pool_3dnms(offs, scs, iou_thr=nms_iou)
+        pool_sizes.append(len(kept))
+        hit = any(iou_official(offs[i], gt) > hit_iou for i in kept)
         n_hit += int(hit)
     pool = np.asarray(pool_sizes, dtype=float) if pool_sizes else np.zeros(0)
     return {

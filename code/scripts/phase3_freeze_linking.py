@@ -122,6 +122,19 @@ def main() -> int:
         results["ablations"][name.strip()] = r
     print()
 
+    # [P3U2 3.C] 3D-NMS freeze sweep on the fold detectors — confirm the seed0-chosen LINK_3DNMS_IOU is
+    # recall-neutral here (recall holds; pool drops) before the formal freeze. Runs at the current
+    # (possibly relaxed) LINK_CONTAINMENT_THRESH so it reflects the deployed relax-then-reduce config.
+    print("-- [P3U2] 3D-NMS sweep (recall should hold; cands/vol should DROP toward RESCORER_POOL_BUDGET) --")
+    results["nms_3d_sweep"] = []
+    for nms in [None, 0.5, 0.4, 0.3, 0.2]:
+        r = linked_recall(det_by_vid, gt_by_vid, meta_by_vid, **base, **cap_kw, nms_iou=nms)
+        tag = "  <- current LINK_3DNMS_IOU" if nms == C.LINK_3DNMS_IOU else ""
+        print(f"    nms_iou={('off' if nms is None else nms):<4} recall={r['recall']:.4f} "
+              f"cands/vol mean={r['cands_per_vol_mean']:.1f} (budget {C.RESCORER_POOL_BUDGET}){tag}", flush=True)
+        results["nms_3d_sweep"].append({"nms_iou": ("off" if nms is None else nms), **r})
+    print()
+
     # [P3-UPDATE L4] LINK_NMS_THRESH sweep note: nms is applied INSIDE the detector, so a true sweep
     # needs re-detection. Re-run this script with a conventions.LINK_NMS_THRESH edit (0.5/0.6/0.7) and
     # --no-cache to compare; the cache tag encodes op only, so change the tag or pass --no-cache.

@@ -115,3 +115,20 @@ def nms_3d(boxes: Sequence[OfficialBox], scores: Sequence[float], iou_thr: float
         iou = inter / (vols[i] + vols[rest] - inter + 1e-12)
         order = rest[iou < iou_thr]
     return keep
+
+
+def reduce_pool_3dnms(boxes: Sequence[OfficialBox], scores: Sequence[float],
+                      iou_thr=C.LINK_3DNMS_IOU) -> List[int]:
+    """[P3U2 3.C] The single guarded frozen-pool reduction. Returns kept indices.
+
+    ``iou_thr is None`` -> keep everything (``list(range(n))``; the pre-Update-2
+    behaviour). A float -> ``nms_3d(boxes, scores, iou_thr)`` (membership-only 3D NMS
+    keyed by ``score_max``; coordinates are never changed). This is the ONE place the
+    None-guard lives, so every pool-construction path (generation, selection,
+    calibration, the freeze sweep, the reducer gate) applies an identical reduction and
+    the frozen pool == the deployed pool everywhere it is measured (Inv. 4, 8).
+    """
+    n = len(boxes)
+    if iou_thr is None:
+        return list(range(n))
+    return nms_3d(boxes, scores, float(iou_thr))

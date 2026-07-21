@@ -25,7 +25,8 @@ from ..preprocess import preprocess_hash
 from ..detect.infer import run_detector_on_volume
 from ..link.tubes import link_tubes
 from ..link.reconstruct import iso_tube_to_official, iso_centre_of_tube, iso_extents_of_tube
-from ..link.aggregate import score_stats, within_volume_rank, label_candidate
+from ..link.aggregate import score_stats, tube_geometry_stats, within_volume_rank, label_candidate
+from ..link.nms import reduce_pool_3dnms
 from .record import CANDIDATE_COLUMNS
 
 
@@ -85,6 +86,11 @@ def generate_volume_candidates(
 
     ``candidate_id = f"{detector_of_origin}:{volume_id}:{local_idx}"`` with
     ``local_idx`` starting at ``local_idx0``. Returns a ``CANDIDATE_COLUMNS`` frame.
+
+    [P3U2 3.C] After reconstruction, a membership-only 3D NMS (``reduce_pool_3dnms``,
+    keyed by ``score_max``, coordinates unchanged) collapses spatially-redundant
+    candidates; it is OFF while ``conventions.LINK_3DNMS_IOU is None`` and is frozen at
+    [P3U2.7]. ``candidate_id`` is assigned to the SURVIVORS so ids stay contiguous.
     """
     det_df = detect_fn(
         model, cache_root, int(volume_id),
@@ -95,19 +101,22 @@ def generate_volume_candidates(
     tubes = link_tubes(det_df)
     phash = preprocess_hash()
 
-    rows: List[dict] = []
-    local_idx = int(local_idx0)
+    # Build a provisional row per tube (no candidate_id yet), then reduce, then id the survivors.
+    provisional: List[dict] = []
+    officials: List[tuple] = []
+    scores: List[float] = []
     for tube in tubes:
         stats = score_stats(tube)
         if C.PREFILTER_SCORE_FLOOR > 0.0 and stats["score_max"] < C.PREFILTER_SCORE_FLOOR:
             continue  # NoduleSAT-style pool floor; recorded recall cost when raised
+        geom = tube_geometry_stats(tube)                     # [P3U2 3.D] soft tube-geometry cues
         official = iso_tube_to_official(tube, meta)          # (coordX,coordY,coordZ,x_len,y_len,z_len)
         cen = iso_centre_of_tube(tube)
         ext = iso_extents_of_tube(tube)
         label, iou_gt = label_candidate(official, gt_official)
-        rows.append({
+        provisional.append({
             "public_id": int(volume_id),
-            "candidate_id": f"{detector_of_origin}:{int(volume_id)}:{local_idx}",
+            "candidate_id": None,                            # assigned to survivors below
             "detector_of_origin": detector_of_origin,
             "split": split,
             "fold": int(fold),
@@ -117,16 +126,27 @@ def generate_volume_candidates(
             "score_std": stats["score_std"], "score_min": stats["score_min"],
             "slice_count": stats["slice_count"], "z_span": stats["z_span"],
             "fill_ratio": stats["fill_ratio"],
+            "centroid_jitter": geom["centroid_jitter"], "area_cv": geom["area_cv"],
+            "area_peak_pos": geom["area_peak_pos"], "area_monotonicity": geom["area_monotonicity"],
             "rank": 0, "rank_norm": 0.0,                     # finalised by generate_split
             "label": label, "iou_gt": iou_gt,
             "cen_d0": cen[0], "cen_d1": cen[1], "cen_d2": cen[2],
             "ext_d0": ext[0], "ext_d1": ext[1], "ext_d2": ext[2],
             "preprocess_hash": phash,
         })
-        local_idx += 1
+        officials.append(tuple(official))
+        scores.append(float(stats["score_max"]))
 
-    if not rows:
+    if not provisional:
         return pd.DataFrame(columns=CANDIDATE_COLUMNS)
+
+    # [P3U2 3.C] frozen-pool reduction (None -> keep all). Survivors keep their reconstructed boxes.
+    kept = reduce_pool_3dnms(officials, scores)
+    rows: List[dict] = []
+    for k, idx in enumerate(sorted(kept)):
+        row = provisional[idx]
+        row["candidate_id"] = f"{detector_of_origin}:{int(volume_id)}:{int(local_idx0) + k}"
+        rows.append(row)
     return pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
 
 

@@ -35,6 +35,7 @@ from abus_jcr.geometry import iou_official
 from abus_jcr.link.tubes import link_tubes
 from abus_jcr.link.reconstruct import iso_tube_to_official
 from abus_jcr.link.aggregate import score_stats
+from abus_jcr.link.nms import reduce_pool_3dnms
 from abus_jcr.eval.froc import evaluate_froc, cpm, recall_ceiling, bootstrap_cpm_ci
 from abus_jcr.conventions import GT_COLUMNS, PRED_COLUMNS
 from abus_jcr.detect.select import select_epoch, selection_stability
@@ -60,13 +61,15 @@ def _linked_cpm(det_by_vid, gt_by_vid, meta_by_vid, gt_used):
     n_hit, pools, preds = 0, [], []
     for vid, det in det_by_vid.items():
         tubes = link_tubes(det)                     # frozen linking params (conventions)
-        pools.append(len(tubes))
         gt = gt_by_vid[int(vid)]
         meta = meta_by_vid[int(vid)]
+        offs = [iso_tube_to_official(t, meta) for t in tubes]
+        scs = [float(score_stats(t)["score_max"]) for t in tubes]
+        kept = reduce_pool_3dnms(offs, scs)         # [P3U2 3.C] deployed pool (None -> all)
+        pools.append(len(kept))
         hit = False
-        for tube in tubes:
-            off = iso_tube_to_official(tube, meta)
-            sc = score_stats(tube)["score_max"]
+        for i in sorted(kept):
+            off, sc = offs[i], scs[i]
             preds.append({"public_id": int(vid), "coordX": off[0], "coordY": off[1], "coordZ": off[2],
                           "x_length": off[3], "y_length": off[4], "z_length": off[5],
                           "probability": min(float(sc), 0.999999)})

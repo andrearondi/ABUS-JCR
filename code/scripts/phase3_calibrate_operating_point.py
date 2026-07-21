@@ -33,6 +33,7 @@ from abus_jcr.geometry import iou_official
 from abus_jcr.link.tubes import link_tubes
 from abus_jcr.link.reconstruct import iso_tube_to_official
 from abus_jcr.link.aggregate import score_stats
+from abus_jcr.link.nms import reduce_pool_3dnms
 from abus_jcr.eval.froc import evaluate_froc, cpm as _cpm, recall_ceiling as _ceil
 from abus_jcr.conventions import GT_COLUMNS, PRED_COLUMNS
 from _phase3_common import (add_phase3_paths, assert_device, cache_root, checkpoints_dir,
@@ -47,9 +48,11 @@ def _linked_cpm_for(det_by_vid, gt_by_vid, meta_by_vid, gt_used):
     """Linked CPM + ceiling over a seed's volumes (official oracle). Returns (cpm, ceiling)."""
     preds = []
     for vid, det in det_by_vid.items():
-        for tube in link_tubes(det):
-            off = iso_tube_to_official(tube, meta_by_vid[int(vid)])
-            sc = score_stats(tube)["score_max"]
+        tubes = link_tubes(det)
+        offs = [iso_tube_to_official(t, meta_by_vid[int(vid)]) for t in tubes]
+        scs = [float(score_stats(t)["score_max"]) for t in tubes]
+        for i in reduce_pool_3dnms(offs, scs):      # [P3U2 3.C] deployed pool (None -> all)
+            off, sc = offs[i], scs[i]
             preds.append({"public_id": int(vid), "coordX": off[0], "coordY": off[1], "coordZ": off[2],
                           "x_length": off[3], "y_length": off[4], "z_length": off[5],
                           "probability": min(float(sc), 0.999999)})

@@ -24,6 +24,8 @@ CANDIDATE_COLUMNS = [
     "public_id", "candidate_id", "detector_of_origin", "split", "fold",
     "coordX", "coordY", "coordZ", "x_length", "y_length", "z_length",   # official native (scoring space)
     "score_max", "score_mean", "score_std", "score_min", "slice_count", "z_span", "fill_ratio",
+    # [P3U2 3.D] tube-geometry block (TUBE_GEOM_COLUMNS) — a NEW ablatable Phase-4 block; soft cues, not gates
+    "centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity",
     "rank", "rank_norm",
     "label", "iou_gt",                                                   # pos/neg/ignore + max IoU to GT
     "cen_d0", "cen_d1", "cen_d2", "ext_d0", "ext_d1", "ext_d2",         # iso-voxel centre + extents (Phase-4 crop)

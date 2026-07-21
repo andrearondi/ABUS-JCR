@@ -43,6 +43,55 @@ def score_stats(tube: Tube) -> dict:
     }
 
 
+# [P3U2 3.D] Tube-geometry block — re-exported from conventions (the source of truth), kept SEPARATE
+# from the frozen SCORE_STAT_COLUMNS so the score-stats vector stays byte-stable and the blocks ablate
+# independently in Phase 4.
+TUBE_GEOM_COLUMNS = C.TUBE_GEOM_COLUMNS
+
+
+def tube_geometry_stats(tube: Tube) -> dict:
+    """[P3U2 3.D] Cross-slice tube-geometry summary (``TUBE_GEOM_COLUMNS``). Torch-free.
+
+    From the z-ordered members ``(slice_z, (x1,y1,x2,y2), score)`` (``EPS = 1e-6``):
+    per-slice centre ``c_i = ((x1+x2)/2, (y1+y2)/2)``, in-plane ``area_i``, and
+    ``diag_i = hypot(w_i, h_i)``. Returns four soft geometry cues (never linker gates):
+
+    - ``centroid_jitter`` = ``mean_i||c_{i+1}-c_i|| / (mean_i diag_i + EPS)`` — lower is a
+      steadier (more lesion-like) tube; ``0.0`` for a single member.
+    - ``area_cv`` = ``std(area, ddof=0) / (mean(area) + EPS)`` — magnitude of cross-slice
+      size change (a shadow's constant footprint -> ~0; a lesion that grows then shrinks -> >0).
+    - ``area_peak_pos`` = ``argmax(area) / (n-1)`` in ``[0, 1]`` — where the largest
+      cross-section sits (~0.5 for a centred lesion); ``0.5`` for a single member.
+    - ``area_monotonicity`` = ``1 / (1 + max(0, S-1))`` where ``S`` is the number of sign
+      changes in the non-zero consecutive area-differences — a single-peak (unimodal) OR
+      flat OR monotone profile scores ``1.0``; a multi-peak/erratic profile scores lower.
+    """
+    if not tube:
+        raise ValueError("tube_geometry_stats: empty tube")
+    EPS = 1e-6
+    boxes = np.asarray([b for _, b, _ in tube], dtype=float).reshape(-1, 4)
+    n = len(boxes)
+    cx = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cy = (boxes[:, 1] + boxes[:, 3]) / 2.0
+    w = np.clip(boxes[:, 2] - boxes[:, 0], 0.0, None)
+    h = np.clip(boxes[:, 3] - boxes[:, 1], 0.0, None)
+    area = w * h
+    if n < 2:
+        return {"centroid_jitter": 0.0, "area_cv": 0.0, "area_peak_pos": 0.5,
+                "area_monotonicity": 1.0}
+    diag = np.hypot(w, h)
+    step = np.hypot(np.diff(cx), np.diff(cy))
+    centroid_jitter = float(step.mean() / (diag.mean() + EPS))
+    area_cv = float(area.std(ddof=0) / (area.mean() + EPS))
+    area_peak_pos = float(int(np.argmax(area)) / (n - 1))
+    signs = np.sign(np.diff(area))
+    signs = signs[signs != 0]
+    n_sign_changes = int(np.sum(signs[1:] != signs[:-1])) if signs.size > 1 else 0
+    area_monotonicity = float(1.0 / (1.0 + max(0, n_sign_changes - 1)))
+    return {"centroid_jitter": centroid_jitter, "area_cv": area_cv,
+            "area_peak_pos": area_peak_pos, "area_monotonicity": area_monotonicity}
+
+
 def within_volume_rank(cand_df: pd.DataFrame) -> pd.DataFrame:
     """Per ``public_id``: add ``rank`` (1 = highest ``score_max``) and ``rank_norm``.
 

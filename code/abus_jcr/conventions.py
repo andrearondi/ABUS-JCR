@@ -226,6 +226,13 @@ LINK_SCORE_AGG      = "max"  # per-tube baseline score = peak per-slice score (I
 # not per-detector — Inv. 4). None = uncapped (asserted-set before the frozen generation run).
 LINK_MAX_TUBE_ZSPAN     = 182   # set at [3.3']: round(1.8 * Train GT z-extent p99, iso slices)
 LINK_MAX_CENTROID_DRIFT = 342   # set at [3.3']: round(1.5 * Train GT in-plane extent p99, iso px)
+# [P3U2 3.C] Membership-only 3D NMS over reconstructed candidates: keep the highest-score_max box in
+# each 3D-IoU cluster, drop the rest (coordinates UNCHANGED). Recall-preserving on distinct lesions;
+# collapses the 3D duplicates that a relaxed LINK_CONTAINMENT_THRESH re-introduces, WITHOUT touching
+# depth-collinear low-IoU FP trains (the Axis-A signal Phase 4 exploits). None = OFF (pre-Update-2).
+# Provisional value from the [P3U2.4f-2] seed0 de-risk gate; FORMALLY FROZEN at [P3U2.7] on the OOF
+# fold detectors (Inv. 4), alongside LINK_CONTAINMENT_THRESH (which the gate may relax to 0.90/0.95/off).
+LINK_3DNMS_IOU          = None  # PROVISIONAL (off); set at [P3U2.4f-2], freeze at [P3U2.7]. RECORD.
 # --- Phase 3 (B): candidate-generation operating point (per-slice read-off; calibrated on VAL) ---
 LINK_NMS_THRESH        = 0.70   # PROVISIONAL: swept {0.5,0.6,0.7} at [3.3'], freeze the recall-neutral min
                                 # (MONAI medical RetinaNet uses 0.22; 0.5 is conservative). Loosened, not
@@ -237,8 +244,18 @@ LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 3
 LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the ranking-aware VAL operating point in [3.4'], RECORD
 PREFILTER_SCORE_FLOOR  = 0.0    # optional tube score_max floor (NoduleSAT-style); raised only to meet the
                                 # pool budget; RECORD its recall cost (0.0 = off)
-CANDIDATE_POOL_BUDGET  = 1000   # [P3-UPDATE L6] soft target candidates/volume (was 150). Set module is
-                                # comfortable to n~2000; LUNA16 precedent ~850/scan at 98.3% recall.
+# [P3U2 3.B] TWO pool numbers. The pool the Phase-4 O(n^2) set module consumes must be LOW HUNDREDS,
+# not the ~2000 MEMORY ceiling: PHASE_4 §1.3 is designed for "tens", and NoduleSAT/Liao/PAIR-Former
+# pre-filter to a small high-value set (the geometry/Axis-A signal dilutes and overfits at n~1000 on
+# ~100 volumes). So the linker may run at a large RECALL pool, and the 3D NMS (3.C) + operating point
+# bring the FROZEN pool down to RESCORER_POOL_BUDGET.
+RESCORER_POOL_BUDGET   = 200    # [P3U2 3.B] hard-ish target for the FROZEN (post-3D-NMS) pool Phase 4
+                                # consumes. DEFAULT 200 (low hundreds); user-vetoable (spec Open esc. #1).
+LINK_RECALL_POOL_MAX   = 1800   # [P3U2 3.B] diagnostic ceiling on the PRE-reduction linker pool (holds the
+                                # recall ceiling; NMS + op reduce it to RESCORER_POOL_BUDGET). Soft.
+CANDIDATE_POOL_BUDGET  = RESCORER_POOL_BUDGET   # [P3U2] back-compat alias -> the post-NMS rescorer pool
+                                # (calibration/ablation over-budget checks now target it). Was 1000 (L6);
+                                # the "comfortable to ~2000" note was a MEMORY argument, not a design one.
 RECALL_CEILING_FRAC    = 0.98   # [P3-UPDATE L5/A2] operating point = among thresholds with linked recall
                                 # >= this * max, pick the one maximising linked val CPM (ranking-aware).
 # --- Phase 3 (C): candidate labeling (Inv. 11 ignore-band) — reuses geometry.iou_official (== iou_3d) ---
@@ -264,3 +281,7 @@ FP_PROBE_CLUSTER_RADIUS   = 10.0  # iso-voxel single-linkage radius for the FP-c
 # The score-statistics vector column names are FROZEN (consumed verbatim by Phase 4).
 SCORE_STAT_COLUMNS = ["score_max", "score_mean", "score_std", "score_min",
                       "slice_count", "z_span", "fill_ratio"]  # fill_ratio = slice_count / z_span
+# [P3U2 3.D] Tube-geometry feature block — a NEW, SEPARATE ablatable block for Phase 4 (§1.2),
+# added before the pool is generated. Kept apart from the frozen SCORE_STAT_COLUMNS above so the
+# existing score-stats vector stays byte-stable and the two blocks ablate independently.
+TUBE_GEOM_COLUMNS = ["centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity"]
