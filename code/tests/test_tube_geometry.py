@@ -1,10 +1,9 @@
 """[P3U2 3.D] Cross-slice tube-geometry features (torch-free).
 
-A compact lesion's axial cross-section rises to a centred peak then falls (steady
-centre, high area_cv, area_peak_pos ~0.5, area_monotonicity 1.0); a posterior shadow
-keeps a ~constant footprint (low area_cv, unimodal/flat -> 1.0); an erratic FP has a
-multi-peak area profile (area_monotonicity < 1.0). These are SOFT rescorer features,
-never linker gates.
+Two SOFT rescorer cues (never linker gates), kept after the [P3U2.diag] validation:
+``centroid_jitter`` (steadier tube = lower; TP < FP) and ``area_cv`` (a lesion's cross-section
+grows then shrinks, a shadow stays constant; TP > FP). ``area_peak_pos`` and ``area_monotonicity``
+were PRUNED (no signal / length-confounded).
 """
 
 import numpy as np
@@ -22,33 +21,23 @@ def test_columns_constant_matches_keys():
     tube = [_sq(5, 5, 1, 0), _sq(5, 5, 2, 1)]
     s = tube_geometry_stats(tube)
     assert set(s.keys()) == set(TUBE_GEOM_COLUMNS)
-    assert TUBE_GEOM_COLUMNS == ["centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity"]
+    assert TUBE_GEOM_COLUMNS == ["centroid_jitter", "area_cv"]
 
 
-def test_compact_lesion_profile():
-    # steady centre (5,5); half-sizes 1,2,3,2,1 -> areas 4,16,36,16,4 (unimodal, centred)
+def test_compact_lesion_high_area_cv_steady_centre():
+    # steady centre (5,5); half-sizes 1,2,3,2,1 -> areas 4,16,36,16,4 (lesion cross-section)
     tube = [_sq(5, 5, h, z) for z, h in enumerate([1, 2, 3, 2, 1])]
     s = tube_geometry_stats(tube)
     assert s["centroid_jitter"] == pytest.approx(0.0)          # centre never moves
-    assert s["area_peak_pos"] == pytest.approx(0.5)            # peak at index 2 of 0..4
-    assert s["area_monotonicity"] == pytest.approx(1.0)        # single peak
     assert s["area_cv"] > 0.5                                  # strong cross-slice size change
 
 
-def test_shadow_constant_footprint():
-    # steady centre, constant area -> low CV, unimodal/flat score 1.0
+def test_shadow_constant_footprint_low_area_cv():
+    # steady centre, constant area -> low CV (shadow-like)
     tube = [_sq(5, 5, 2, z) for z in range(4)]
     s = tube_geometry_stats(tube)
     assert s["area_cv"] == pytest.approx(0.0)
-    assert s["area_monotonicity"] == pytest.approx(1.0)
     assert s["centroid_jitter"] == pytest.approx(0.0)
-
-
-def test_erratic_multipeak_lowers_monotonicity():
-    # areas 4,36,4,36,4 -> multiple sign changes in the area profile
-    tube = [_sq(5, 5, h, z) for z, h in enumerate([1, 3, 1, 3, 1])]
-    s = tube_geometry_stats(tube)
-    assert s["area_monotonicity"] < 1.0
 
 
 def test_centroid_jitter_detects_wander():
@@ -63,7 +52,6 @@ def test_single_member_and_empty():
     s = tube_geometry_stats([_sq(5, 5, 2, 7)])
     assert s["centroid_jitter"] == pytest.approx(0.0)
     assert s["area_cv"] == pytest.approx(0.0)
-    assert s["area_peak_pos"] == pytest.approx(0.5)
-    assert s["area_monotonicity"] == pytest.approx(1.0)
+    assert set(s.keys()) == set(TUBE_GEOM_COLUMNS)
     with pytest.raises(ValueError):
         tube_geometry_stats([])

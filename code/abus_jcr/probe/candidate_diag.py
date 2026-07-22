@@ -33,7 +33,7 @@ from ..link.aggregate import score_stats, tube_geometry_stats
 CAND_DIAG_COLUMNS = [
     "public_id",
     "score_max", "score_mean", "score_std", "score_min", "slice_count", "z_span", "fill_ratio",
-    "centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity",
+    "centroid_jitter", "area_cv",
     "coordX", "coordY", "coordZ", "ext_x", "ext_y", "ext_z", "box_diag",
     "official_iou", "iso_iou", "recon_loss", "is_tp",
 ]
@@ -59,7 +59,7 @@ def build_candidate_frame(public_id: int, tubes: Sequence[Tube], gt_official,
             "public_id": int(public_id),
             **{k: s[k] for k in ["score_max", "score_mean", "score_std", "score_min",
                                  "slice_count", "z_span", "fill_ratio"]},
-            **{k: g[k] for k in ["centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity"]},
+            **{k: g[k] for k in ["centroid_jitter", "area_cv"]},
             "coordX": float(off[0]), "coordY": float(off[1]), "coordZ": float(off[2]),
             "ext_x": ext_x, "ext_y": ext_y, "ext_z": ext_z,
             "box_diag": float(np.sqrt(ext_x ** 2 + ext_y ** 2 + ext_z ** 2)),

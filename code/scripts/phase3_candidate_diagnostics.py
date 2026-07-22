@@ -200,7 +200,7 @@ def main() -> int:
 
     # 7. TUBE-GEOMETRY FEATURES (3.D) TP vs FP
     print("\n# 7. TUBE-GEOMETRY FEATURES (3.D) — TP vs FP means (do they discriminate?)\n")
-    for col in ["centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity", "score_std", "score_mean"]:
+    for col in ["centroid_jitter", "area_cv", "score_std", "score_mean"]:
         st = tp_fp_split_stats(frame, col)
         print(f"  {col:>17}: TP mean={st['TP']['mean']:.3f}  FP mean={st['FP']['mean']:.3f}")
 

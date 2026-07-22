@@ -227,12 +227,13 @@ LINK_SCORE_AGG      = "max"  # per-tube baseline score = peak per-slice score (I
 LINK_MAX_TUBE_ZSPAN     = 182   # set at [3.3']: round(1.8 * Train GT z-extent p99, iso slices)
 LINK_MAX_CENTROID_DRIFT = 342   # set at [3.3']: round(1.5 * Train GT in-plane extent p99, iso px)
 # [P3U2 3.C] Membership-only 3D NMS over reconstructed candidates: keep the highest-score_max box in
-# each 3D-IoU cluster, drop the rest (coordinates UNCHANGED). Recall-preserving on distinct lesions;
-# collapses the 3D duplicates that a relaxed LINK_CONTAINMENT_THRESH re-introduces, WITHOUT touching
-# depth-collinear low-IoU FP trains (the Axis-A signal Phase 4 exploits). None = OFF (pre-Update-2).
-# Provisional value from the [P3U2.4f-2] seed0 de-risk gate; FORMALLY FROZEN at [P3U2.7] on the OOF
-# fold detectors (Inv. 4), alongside LINK_CONTAINMENT_THRESH (which the gate may relax to 0.90/0.95/off).
-LINK_3DNMS_IOU          = None  # PROVISIONAL (off); set at [P3U2.4f-2], freeze at [P3U2.7]. RECORD.
+# each 3D-IoU cluster, drop the rest (coordinates UNCHANGED). DEFAULT OFF (None) after [P3U2.diag]: the
+# per-candidate score floor (PREFILTER_SCORE_FLOOR) already brings the pool to ~56/vol at recall 0.933, so
+# no dedup is needed for the budget — and collapsing the ~15 redundant TP tubes/vol would DISCARD distinct
+# 3D crops + the consensus signal the Phase-4 set/geometry rescorer can exploit. Kept as an OPTIONAL Phase-4
+# ablation ("does de-duplicating help or hurt the rescorer?"), not a baked-in reducer. If ever enabled, it is
+# frozen on the OOF fold detectors at [P3U2.7] (Inv. 4). The reducer machinery + gate remain for that ablation.
+LINK_3DNMS_IOU          = None  # OFF by default; the score floor is the pool lever (see PREFILTER_SCORE_FLOOR).
 # --- Phase 3 (B): candidate-generation operating point (per-slice read-off; calibrated on VAL) ---
 LINK_NMS_THRESH        = 0.70   # PROVISIONAL: swept {0.5,0.6,0.7} at [3.3'], freeze the recall-neutral min
                                 # (MONAI medical RetinaNet uses 0.22; 0.5 is conservative). Loosened, not
@@ -287,4 +288,6 @@ SCORE_STAT_COLUMNS = ["score_max", "score_mean", "score_std", "score_min",
 # [P3U2 3.D] Tube-geometry feature block — a NEW, SEPARATE ablatable block for Phase 4 (§1.2),
 # added before the pool is generated. Kept apart from the frozen SCORE_STAT_COLUMNS above so the
 # existing score-stats vector stays byte-stable and the two blocks ablate independently.
-TUBE_GEOM_COLUMNS = ["centroid_jitter", "area_cv", "area_peak_pos", "area_monotonicity"]
+# Pruned at [P3U2.diag]: area_peak_pos (no TP/FP signal) and area_monotonicity (length-confounded,
+# redundant with slice_count/area_cv) — both dropped; the two survivors validated as discriminative.
+TUBE_GEOM_COLUMNS = ["centroid_jitter", "area_cv"]

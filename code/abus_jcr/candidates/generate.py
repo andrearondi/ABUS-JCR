@@ -127,7 +127,6 @@ def generate_volume_candidates(
             "slice_count": stats["slice_count"], "z_span": stats["z_span"],
             "fill_ratio": stats["fill_ratio"],
             "centroid_jitter": geom["centroid_jitter"], "area_cv": geom["area_cv"],
-            "area_peak_pos": geom["area_peak_pos"], "area_monotonicity": geom["area_monotonicity"],
             "rank": 0, "rank_norm": 0.0,                     # finalised by generate_split
             "label": label, "iou_gt": iou_gt,
             "cen_d0": cen[0], "cen_d1": cen[1], "cen_d2": cen[2],
