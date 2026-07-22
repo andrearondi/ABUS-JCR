@@ -238,16 +238,20 @@ LINK_3DNMS_IOU          = None  # OFF by default; the score floor is the pool le
 LINK_NMS_THRESH        = 0.70   # PROVISIONAL: swept {0.5,0.6,0.7} at [3.3'], freeze the recall-neutral min
                                 # (MONAI medical RetinaNet uses 0.22; 0.5 is conservative). Loosened, not
                                 # disabled (Inv. 2). Still > DET_DIAG_NMS_THRESH 0.5 until re-frozen.
-LINK_CONTAINMENT_THRESH = 0.80  # [P3-UPDATE L4] per-slice containment suppression: drop a lower-score box if
-                                # inter/area_small >= this vs a higher-score box. Kills the nested small-in-big
-                                # duplicates IoU-NMS structurally cannot (IoU(small,big)=area_small/area_big).
+LINK_CONTAINMENT_THRESH = 1.0   # [P3U2.set 2026-07-21] OFF (>=1.0 = no-op). Provisional: relaxed from 0.80 so
+                                # the over-trimmed distinct lesions (110/121/122) rejoin the pool (recall 0.833
+                                # -> 0.933 on seed0); the score floor cuts the resulting FP tail. FROZEN on the
+                                # OOF fold detectors at [P3U2.7]. [P3-UPDATE L4] semantics: drop a lower-score
+                                # box if inter/area_small >= this vs a higher-score box (kills nested duplicates).
 LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 300)
 LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the ranking-aware VAL operating point in [3.4'], RECORD
-PREFILTER_SCORE_FLOOR  = 0.0    # [P3U2] LUNA/NoduleSAT-style per-candidate score_max floor: drop tubes whose
-                                # peak per-slice score < this, applied BEFORE the 3D NMS, in EVERY pool path
-                                # (generate, linked_recall, select, calibrate, reducer gate). The primary pool
-                                # lever when the FP pool is a low-confidence tail — pick from the
-                                # phase3_candidate_diagnostics floor sweep; RECORD its recall cost (0.0 = off).
+PREFILTER_SCORE_FLOOR  = 0.08   # [P3U2.set 2026-07-21] LUNA/NoduleSAT-style per-candidate score_max floor: drop
+                                # tubes whose peak per-slice score < this, applied BEFORE the 3D NMS, in EVERY
+                                # pool path (generate, linked_recall, select, calibrate, reducer gate). THE
+                                # primary pool lever: the FP pool is a low-confidence tail (FP score_max median
+                                # 0.045 vs TP 0.166; [P3U2.diag]). Provisional 0.08 (seed0 sweep: 0.10 cleared
+                                # @ pool_MAX 173 but at the recall cliff; 0.08 keeps margin). FROZEN on the OOF
+                                # fold detectors at [P3U2.7] with a widened LINK_MIN_TUBE_LEN; RECORD recall cost.
 # [P3U2 3.B] TWO pool numbers. The pool the Phase-4 O(n^2) set module consumes must be LOW HUNDREDS,
 # not the ~2000 MEMORY ceiling: PHASE_4 §1.3 is designed for "tens", and NoduleSAT/Liao/PAIR-Former
 # pre-filter to a small high-value set (the geometry/Axis-A signal dilutes and overfits at n~1000 on
