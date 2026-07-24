@@ -52,7 +52,7 @@ def test_bounded_linker_recall_nondecreasing_as_threshold_falls():
     all_rows = lesion + noise
 
     def n_tubes_ge2(df):
-        return link_tubes(df, max_tube_zspan=20, max_centroid_drift=20, containment_thresh=1.0)
+        return link_tubes(df, max_tube_zspan=20, max_centroid_drift=20, containment_thresh=1.0, min_tube_len=2)
 
     hi = _frame([r for r in all_rows if r["score"] >= 0.5])   # lesion only
     lo = _frame([r for r in all_rows if r["score"] >= 0.01])  # lesion + noise

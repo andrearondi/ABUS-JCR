@@ -216,8 +216,10 @@ DET_ANCHOR_ASPECT_RATIOS = (0.2, 0.25, 0.33, 1.0)   # Train h/w p10/p50/p90=0.16
 # --- Phase 3 (A): fixed 3D aggregation — FROZEN once, reused for ALL detectors (Inv. 4) ---
 LINK_IOU            = 0.30   # 2D IoU to continue a tube into the adjacent slice
 LINK_MAX_Z_GAP      = 1      # bridge up to this many non-firing slices within one tube
-LINK_MIN_TUBE_LEN   = 2      # PROVISIONAL: widened sweep {2..6} at [3.3']; freeze the largest recall-neutral
-                            # value (RESULTS [3.3']). Precedent: Oh et al. 2023 ABUS 2D-link uses tau_s=5.
+LINK_MIN_TUBE_LEN   = 8      # [P3U2.7 FROZEN 2026-07-24] largest recall-neutral on the 5 OOF fold detectors:
+                            # fold recall 0.720 flat for min_len 2..8 (pool 135.8 -> 94.0, ~30% free cut),
+                            # drops at 10. Sound: TP slice_count p10=18 >> FP p90=13 ([P3U2.diag] §6).
+                            # Precedent: Oh et al. 2023 ABUS 2D-link uses tau_s=5.
 LINK_SCORE_AGG      = "max"  # per-tube baseline score = peak per-slice score (Inv./brief: committed)
 # [P3-UPDATE L1] Tube drift/length caps — the pre-P3-UPDATE linker random-walked with NO cap and
 # reconstructed an unbounded union hull, producing whole-volume "candidates" (box_diag max 1052.9 vs the
@@ -245,13 +247,14 @@ LINK_CONTAINMENT_THRESH = 1.0   # [P3U2.set 2026-07-21] OFF (>=1.0 = no-op). Pro
                                 # box if inter/area_small >= this vs a higher-score box (kills nested duplicates).
 LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 300)
 LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the ranking-aware VAL operating point in [3.4'], RECORD
-PREFILTER_SCORE_FLOOR  = 0.08   # [P3U2.set 2026-07-21] LUNA/NoduleSAT-style per-candidate score_max floor: drop
-                                # tubes whose peak per-slice score < this, applied BEFORE the 3D NMS, in EVERY
-                                # pool path (generate, linked_recall, select, calibrate, reducer gate). THE
+PREFILTER_SCORE_FLOOR  = 0.08   # [P3U2.7 FROZEN 2026-07-24] LUNA/NoduleSAT-style per-candidate score_max floor:
+                                # drop tubes whose peak per-slice score < this, applied BEFORE the 3D NMS, in
+                                # EVERY pool path (generate, linked_recall, select, calibrate, reducer gate). THE
                                 # primary pool lever: the FP pool is a low-confidence tail (FP score_max median
-                                # 0.045 vs TP 0.166; [P3U2.diag]). Provisional 0.08 (seed0 sweep: 0.10 cleared
-                                # @ pool_MAX 173 but at the recall cliff; 0.08 keeps margin). FROZEN on the OOF
-                                # fold detectors at [P3U2.7] with a widened LINK_MIN_TUBE_LEN; RECORD recall cost.
+                                # 0.045 vs TP 0.166; [P3U2.diag]). FOLD-VALIDATED at [P3U2.7]: on the 5 OOF fold
+                                # detectors the floor costs only 1/100 lesion vs floor 0.0 (recall 0.730->0.720)
+                                # while cutting the pool 613.6->135.8/vol -> NOT over-cutting the weak folds; the
+                                # low fold ceiling (~0.72) is the 80-vol detectors themselves, not the floor.
 # [P3U2 3.B] TWO pool numbers. The pool the Phase-4 O(n^2) set module consumes must be LOW HUNDREDS,
 # not the ~2000 MEMORY ceiling: PHASE_4 §1.3 is designed for "tens", and NoduleSAT/Liao/PAIR-Former
 # pre-filter to a small high-value set (the geometry/Axis-A signal dilutes and overfits at n~1000 on

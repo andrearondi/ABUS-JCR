@@ -30,7 +30,7 @@ def _frame(rows):
 def test_two_aligned_boxes_form_one_tube():
     df = _frame([_det(7, 0, 0, 0, 10, 10, 0.9),
                  _det(7, 1, 0, 0, 10, 10, 0.8)])
-    tubes = link_tubes(df)
+    tubes = link_tubes(df, min_tube_len=2)   # pin: tests linking mechanics, not the frozen production min_len
     assert len(tubes) == 1
     tube = tubes[0]
     assert [b[0] for b in tube] == [0, 1]  # z-ordered

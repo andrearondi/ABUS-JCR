@@ -53,7 +53,7 @@ def test_caps_inert_on_a_compact_lesion():
     # A short, stationary 4-slice tube — well within any sane cap.
     rows = [_det(3, z, 0, 0, 10, 10, 0.9 - z * 0.01) for z in range(4)]
     df = _frame(rows)
-    a = link_tubes(df, max_tube_zspan=None, max_centroid_drift=None, containment_thresh=1.0)
-    b = link_tubes(df, max_tube_zspan=50, max_centroid_drift=50, containment_thresh=1.0)
+    a = link_tubes(df, max_tube_zspan=None, max_centroid_drift=None, containment_thresh=1.0, min_tube_len=2)
+    b = link_tubes(df, max_tube_zspan=50, max_centroid_drift=50, containment_thresh=1.0, min_tube_len=2)
     assert a == b  # identical tubes; cap never fired
     assert len(b) == 1 and len(b[0]) == 4
