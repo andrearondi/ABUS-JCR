@@ -80,11 +80,12 @@ def main() -> int:
                   containment_thresh=C.LINK_CONTAINMENT_THRESH)
 
     base = dict(link_iou=C.LINK_IOU, max_z_gap=C.LINK_MAX_Z_GAP, min_tube_len=C.LINK_MIN_TUBE_LEN)
-    # [P3-UPDATE L3] widen min_tube_len {2..6} (was +/-1); [3.3] showed 3 is recall-neutral.
+    # [P3-UPDATE L3 / P3U2] widen min_tube_len {2..12}: [P3U2.diag] §6 showed TP slice_count p10=18 vs FP
+    # p90=13, so a higher min-len trims short FP tubes at (near-)zero recall cost. Pick the largest recall-neutral.
     sweeps = {
         "link_iou": [round(C.LINK_IOU - 0.1, 3), C.LINK_IOU, round(C.LINK_IOU + 0.1, 3)],
         "max_z_gap": [max(0, C.LINK_MAX_Z_GAP - 1), C.LINK_MAX_Z_GAP, C.LINK_MAX_Z_GAP + 1],
-        "min_tube_len": [2, 3, 4, 5, 6],
+        "min_tube_len": [2, 3, 4, 5, 6, 8, 10, 12],
     }
 
     print(f"# [3.3'] Linking-param validation (folds={args.folds}, n_vol={len(det_by_vid)}, "
@@ -133,6 +134,20 @@ def main() -> int:
         print(f"    nms_iou={('off' if nms is None else nms):<4} recall={r['recall']:.4f} "
               f"cands/vol mean={r['cands_per_vol_mean']:.1f} (budget {C.RESCORER_POOL_BUDGET}){tag}", flush=True)
         results["nms_3d_sweep"].append({"nms_iou": ("off" if nms is None else nms), **r})
+    print()
+
+    # [P3U2] PREFILTER_SCORE_FLOOR sweep on the FOLD detectors — the score floor is frozen on train (Inv. 4),
+    # but it was PICKED on seed0-val ([P3U2.diag]). Fold detectors (80-vol, weaker) may have lower TP scores,
+    # so a floor tuned to seed0 can over-cut them. This sweep shows fold recall vs floor: FREEZE the LARGEST
+    # floor that stays recall-neutral ON THE FOLDS (not just on seed0). Runs at the deployed containment/caps.
+    print("-- [P3U2] score-floor sweep on the FOLD detectors (recall must hold on folds; pool should DROP) --")
+    results["score_floor_sweep"] = []
+    for floor in [0.0, 0.04, 0.05, 0.06, 0.08, 0.10]:
+        r = linked_recall(det_by_vid, gt_by_vid, meta_by_vid, **base, **cap_kw, score_floor=floor)
+        tag = "  <- current PREFILTER_SCORE_FLOOR" if floor == C.PREFILTER_SCORE_FLOOR else ""
+        print(f"    floor={floor:<5} recall={r['recall']:.4f} "
+              f"cands/vol mean={r['cands_per_vol_mean']:.1f} (budget {C.RESCORER_POOL_BUDGET}){tag}", flush=True)
+        results["score_floor_sweep"].append({"score_floor": floor, **r})
     print()
 
     # [P3-UPDATE L4] LINK_NMS_THRESH sweep note: nms is applied INSIDE the detector, so a true sweep
