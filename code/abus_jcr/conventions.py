@@ -246,7 +246,9 @@ LINK_CONTAINMENT_THRESH = 1.0   # [P3U2.set 2026-07-21] OFF (>=1.0 = no-op). Pro
                                 # OOF fold detectors at [P3U2.7]. [P3-UPDATE L4] semantics: drop a lower-score
                                 # box if inter/area_small >= this vs a higher-score box (kills nested duplicates).
 LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 300)
-LINK_OP_SCORE_THRESH   = 0.05   # PROVISIONAL; frozen at the ranking-aware VAL operating point in [3.4'], RECORD
+LINK_OP_SCORE_THRESH   = 0.03   # [P3U2.8 FROZEN 2026-07-25] ranking-aware VAL operating point: among thresholds
+                                # with recall >= 0.98*max, the max-CPM one. 3-seed mean @ 0.03: recall 0.867
+                                # (std 0.047), CPM 0.553, 101.2 cands/vol (<= budget 200). == DET_SELECT_OP_THRESH.
 PREFILTER_SCORE_FLOOR  = 0.08   # [P3U2.7 FROZEN 2026-07-24] LUNA/NoduleSAT-style per-candidate score_max floor:
                                 # drop tubes whose peak per-slice score < this, applied BEFORE the 3D NMS, in
                                 # EVERY pool path (generate, linked_recall, select, calibrate, reducer gate). THE

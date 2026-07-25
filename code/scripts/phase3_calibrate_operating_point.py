@@ -180,7 +180,9 @@ def main() -> int:
     out_dir = Path(args.out_root) / "calibration"
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = {"sweep": agg, "per_seed": seed_curves, "max_recall": max_recall,
-               "ceiling_frac": args.ceiling_frac, "monotonicity_violations": viol,
+               "ceiling_frac": args.ceiling_frac,
+               "monotonicity_violations_deployment": viol_gate,   # gate: must be empty (>= recall-peak op)
+               "monotonicity_violations_full": viol_all,          # benign sub-peak wobble (reported only)
                "chosen_thresh": chosen["thresh"], "chosen_recall": chosen["recall_mean"],
                "chosen_cpm": chosen["cpm_mean"], "chosen_cands_per_vol": chosen["cands_per_vol_mean"],
                "budget": C.CANDIDATE_POOL_BUDGET}
