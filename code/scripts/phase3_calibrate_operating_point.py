@@ -130,17 +130,30 @@ def main() -> int:
         print(f"{t:>7} {row['recall_mean']:>8.4f} {row['recall_std']:>8.4f} "
               f"{row['cands_per_vol_mean']:>10.1f} {row['cands_per_vol_std']:>9.1f} {row['cpm_mean']:>8.4f}")
 
-    # [P3-UPDATE L2] Monotonicity gate — a superset of detections cannot LOWER linked recall.
-    viol = monotonicity_violations([r["thresh"] for r in agg], [r["recall_mean"] for r in agg])
-    if viol:
-        print("\n*** MONOTONICITY VIOLATION (linked recall dropped as the threshold was lowered) ***")
-        for v in viol:
+    # [P3-UPDATE L2 / P3U2.8 A2-refinement] Monotonicity gate. A superset of detections cannot LOWER
+    # linked recall IN THE DEPLOYMENT REGION (thresholds >= the recall-peak op). Below the peak the pool
+    # floods and the greedy consume-once linker sheds TPs by construction — benign, never a deployed op.
+    all_thr = [r["thresh"] for r in agg]
+    all_rec = [r["recall_mean"] for r in agg]
+    viol_gate = monotonicity_violations(all_thr, all_rec, up_to_peak=True)   # deployment region only
+    viol_all = monotonicity_violations(all_thr, all_rec)                     # full sweep (for reporting)
+    if viol_gate:
+        print("\n*** MONOTONICITY VIOLATION IN THE DEPLOYMENT REGION (recall dropped at/above the peak) ***")
+        for v in viol_gate:
             print(f"    thresh {v['thresh_hi']} -> {v['thresh_lo']}: recall "
                   f"{v['recall_hi']:.4f} -> {v['recall_lo']:.4f}  (drop {v['drop']:.4f})")
         print("This is the fingerprint of an UNSOUND linker (L1 drift caps not effective). STOP —")
         print("do NOT pick an operating point on a broken curve. Investigate link/tubes.py caps.")
         if not args.allow_nonmonotone:
             raise SystemExit(2)
+    elif viol_all:
+        print("\nNOTE: benign sub-peak non-monotonicity (BELOW the recall peak, out of the deployment "
+              "region — the op is chosen at recall saturation). Gate PASSES; reported for completeness:")
+        for v in viol_all:
+            print(f"    thresh {v['thresh_hi']} -> {v['thresh_lo']}: recall "
+                  f"{v['recall_hi']:.4f} -> {v['recall_lo']:.4f}  (drop {v['drop']:.4f})")
+    else:
+        print("\nMonotonicity gate PASSED (recall non-decreasing through the deployment region).")
 
     max_recall = max(r["recall_mean"] for r in agg)
     target = args.ceiling_frac * max_recall

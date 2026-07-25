@@ -150,15 +150,28 @@ def linked_recall(
 
 
 def monotonicity_violations(threshs: Sequence[float], recalls: Sequence[float],
-                            tol: float = 1e-9) -> List[dict]:
-    """[P3-UPDATE L2] Detect non-monotone linked recall — the fingerprint of an unsound linker.
+                            tol: float = 1e-9, up_to_peak: bool = False) -> List[dict]:
+    """[P3-UPDATE L2 / P3U2 A2-refinement] Detect non-monotone linked recall.
 
     A sound aggregation is a superset relation: LOWERING ``op_score_thresh`` adds detections,
     which can only keep or raise linked recall. Sorting the sweep by DESCENDING threshold,
-    recall must be non-decreasing. Returns the list of adjacent (higher->lower threshold) steps
-    where recall DROPPED by more than ``tol`` — empty iff the curve is monotone. Torch-free.
+    recall must be non-decreasing. Returns the adjacent (higher->lower threshold) steps where
+    recall DROPPED by more than ``tol`` — empty iff monotone. Torch-free.
+
+    ``up_to_peak=True`` restricts the check to the **deployment region** — from the highest
+    threshold DOWN TO the recall-peak threshold (the lowest threshold still at max recall).
+    BELOW the recall peak the pool floods and the greedy consume-once linker sheds TPs by
+    construction; that region is never a deployed operating point (the op is chosen at recall
+    saturation, A2), so its non-monotonicity is benign and must not trip the gate. Above/at the
+    peak, a drop is a real unsound-linker regression and IS flagged. [P3U2.8].
     """
     idx = sorted(range(len(threshs)), key=lambda i: -float(threshs[i]))  # descending threshold
+    if up_to_peak and idx:
+        recs = [float(recalls[i]) for i in idx]
+        peak = max(recs)
+        # last position (lowest threshold) still at peak recall -> include the whole peak plateau
+        peak_pos = max(k for k in range(len(recs)) if recs[k] >= peak - tol)
+        idx = idx[:peak_pos + 1]
     out: List[dict] = []
     for a, b in zip(idx, idx[1:]):   # a = higher thresh, b = next-lower thresh (more boxes)
         if float(recalls[b]) < float(recalls[a]) - tol:

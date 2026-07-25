@@ -45,6 +45,33 @@ def test_helper_passes_a_monotone_curve():
     assert monotonicity_violations(threshs, recalls) == []
 
 
+def test_up_to_peak_ignores_benign_subpeak_wobble():
+    # The real [P3U2.8] seed0 shape: recall RISES to a peak at op=0.03 then FALLS below it.
+    threshs = [0.5, 0.3, 0.2, 0.1, 0.05, 0.03, 0.02, 0.01]
+    recalls = [0.0, 0.2, 0.433, 0.667, 0.833, 0.900, 0.867, 0.700]  # peaks at 0.03, then declines
+    # full-range check sees the sub-peak drops (0.900->0.867->0.700) ...
+    assert len(monotonicity_violations(threshs, recalls)) == 2
+    # ... but the deployment-region check (>= recall-peak op) is CLEAN -> gate passes.
+    assert monotonicity_violations(threshs, recalls, up_to_peak=True) == []
+
+
+def test_up_to_peak_still_catches_a_deployment_region_drop():
+    # A drop ABOVE the recall peak (op=0.1) is a real unsound-linker regression -> must be flagged.
+    threshs = [0.5, 0.3, 0.1, 0.05]
+    recalls = [0.4, 0.3, 0.9, 0.5]         # 0.4->0.3 drop at high threshold, before the 0.9 peak
+    viol = monotonicity_violations(threshs, recalls, up_to_peak=True)
+    assert len(viol) == 1 and viol[0]["thresh_hi"] == 0.5 and viol[0]["thresh_lo"] == 0.3
+
+
+def test_up_to_peak_with_plateau_included():
+    # peak recall plateaus across 0.05 and 0.03; the whole plateau is inside the checked region,
+    # and there is no drop within it -> clean.
+    threshs = [0.5, 0.3, 0.1, 0.05, 0.03, 0.02]
+    recalls = [0.2, 0.5, 0.8, 0.9, 0.9, 0.6]   # rise, plateau at 0.9, then sub-peak drop
+    assert monotonicity_violations(threshs, recalls, up_to_peak=True) == []
+    assert len(monotonicity_violations(threshs, recalls)) == 1   # the 0.9->0.6 sub-peak drop
+
+
 def test_bounded_linker_recall_nondecreasing_as_threshold_falls():
     # A clean 3-slice lesion tube (high scores) + low-score noise boxes elsewhere.
     lesion = [_det(1, z, 0, 0, 10, 10, 0.9) for z in range(3)]
