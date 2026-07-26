@@ -94,6 +94,12 @@ def main() -> int:
         meta = K.read_meta(croot, vid)
         gt = gt_official_tuple(gt_idx, vid)
         tubes = link_tubes(det)
+        # [P3U2] apply the deployed per-candidate score floor so these stats reflect the DEPLOYED
+        # (post-score-floor) pool, not the raw linked pool. Without this, cands/vol reads ~2x too high
+        # (the low-score FP tail the floor removes) and the redundancy/score_max distributions are
+        # dominated by tubes that never reach candidate generation.
+        if C.PREFILTER_SCORE_FLOOR > 0.0:
+            tubes = [t for t in tubes if score_stats(t)["score_max"] >= C.PREFILTER_SCORE_FLOOR]
 
         offs, smax, centres = [], [], []
         n_tp = 0
@@ -137,7 +143,8 @@ def main() -> int:
                                     "coordZ": offs[k][2], "x_length": offs[k][3], "y_length": offs[k][4],
                                     "z_length": offs[k][5], "probability": min(float(smax[k]), 0.999999)})
 
-    print(f"# [3.4b] Tube stats (Val, seed {args.seed}, op={args.op_score_thresh}, n_vol={n_vol})\n")
+    print(f"# [3.4b] Tube stats (Val, seed {args.seed}, op={args.op_score_thresh}, "
+          f"score_floor={C.PREFILTER_SCORE_FLOOR}, n_vol={n_vol})  -- DEPLOYED (post-floor) pool\n")
     print(f"candidates/volume: mean={np.mean(n_tubes_per_vol):.1f} median={np.median(n_tubes_per_vol):.0f} "
           f"max={np.max(n_tubes_per_vol):.0f}")
     print(f"TP tubes/volume (hit GT IoU>0.3): mean={np.mean(n_tp_tubes_per_vol):.1f} "
