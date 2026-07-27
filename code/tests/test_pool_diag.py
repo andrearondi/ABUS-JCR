@@ -6,7 +6,7 @@ import pytest
 
 from abus_jcr.probe.pool_diag import (feature_discriminability, ranking_headroom,
                                       pairwise_geometry, set_structure, relative_geometry,
-                                      POOL_FEATURES)
+                                      confidence_iou_stats, top_k_candidates, POOL_FEATURES)
 
 
 def _rec(rows):
@@ -15,7 +15,7 @@ def _rec(rows):
             "slice_count": [], "z_span": [], "fill_ratio": [], "centroid_jitter": [], "area_cv": [],
             "rank_norm": [], "coordX": [], "coordY": [], "coordZ": [],
             "x_length": [], "y_length": [], "z_length": [],
-            "ext_d0": [], "ext_d1": [], "ext_d2": [], "label": [], "detector_of_origin": []}
+            "ext_d0": [], "ext_d1": [], "ext_d2": [], "label": [], "detector_of_origin": [], "iou_gt": []}
     for r in rows:
         for k in cols:
             cols[k].append(r.get(k, 0.0))
@@ -90,6 +90,36 @@ def test_pairwise_geometry_pair_types_and_shapes():
         arr = np.asarray(pg["g"][kind])
         assert arr.ndim == 2 and arr.shape[1] == 6 and np.isfinite(arr).all()
     assert "separability_per_component" in pg and len(pg["separability_per_component"]) == 6
+    assert "separability_tptp_vs_tpfp" in pg and len(pg["separability_tptp_vs_tpfp"]) == 6
+
+
+def test_pairwise_tptp_vs_tpfp_flags_colocated_tps():
+    # 2 TPs sitting essentially on top of each other + 2 FPs far away and spread.
+    rows = [_cand("V", 0.9, "pos", cx=100, cy=100, cz=100),
+            _cand("V", 0.8, "pos", cx=101, cy=100, cz=100),          # TP peer: tiny offset
+            _cand("V", 0.3, "neg", cx=300, cy=300, cz=300),
+            _cand("V", 0.2, "neg", cx=60, cy=350, cz=40)]
+    pg = pairwise_geometry(_rec(rows))
+    # a TP's relation to its co-located TP peer (tiny |dx|/w) differs from its relation to a far FP -> high |δ|
+    assert np.nanmax(pg["separability_tptp_vs_tpfp"]) > 0.9
+
+
+# --- confidence vs IoU ---
+def test_confidence_iou_stats():
+    # score correlates with iou; top-2 per set are the high-score TPs
+    rows = [_cand("A", 0.9, "pos", cx=0), _cand("A", 0.6, "pos", cx=1), _cand("A", 0.1, "neg", cx=50),
+            _cand("A", 0.05, "neg", cx=60)]
+    ci = confidence_iou_stats(_rec([dict(r, iou_gt=(0.7 if r["label"] == "pos" else 0.0)) for r in rows]), k=2)
+    assert ci["pearson_score_iou"] > 0.5          # higher score -> higher iou here
+    assert ci["topk_frac_tp"] == pytest.approx(1.0)   # the top-2 by score are the TPs
+    assert ci["topk_mean_iou"] == pytest.approx(0.7)
+    assert len(ci["scatter"]["score_max"]) == 4
+
+
+def test_top_k_candidates_orders_by_score():
+    rows = [_cand("A", 0.3, "neg"), _cand("A", 0.9, "pos"), _cand("A", 0.6, "neg")]
+    tk = top_k_candidates(_rec(rows), k=2)
+    assert list(tk["score_max"]) == [0.9, 0.6] and len(tk) == 2
 
 
 # --- Task 4: set_structure ---

@@ -25,6 +25,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.patches as mpatches  # noqa: E402
+import matplotlib.gridspec as gridspec  # noqa: E402
 
 from abus_jcr.candidates.record import read_candidate_record  # noqa: E402
 from abus_jcr.probe import pool_diag as PD  # noqa: E402
@@ -56,16 +58,21 @@ def _print_blocks(df: pd.DataFrame, tag: str) -> dict:
         print(f"    {b:>6} FP/vol -> recall {r:.3f}")
 
     pg = PD.pairwise_geometry(df)
-    print("\n# 3. PAIRWISE GEOMETRY g(m,n) — AXIS-A TEST (TP-FP vs FP-FP separability per component)\n")
+    print("\n# 3. PAIRWISE GEOMETRY g(m,n) — AXIS-A TEST\n")
     print(f"  pair counts: {pg['counts']}")
-    print(f"  {'component':>14} {'TPTP_med':>9} {'TPFP_med':>9} {'FPFP_med':>9} {'|δ|(TPFP,FPFP)':>15}")
+    print(f"  {'component':>14} {'TPTP_med':>9} {'TPFP_med':>9} {'FPFP_med':>9} "
+          f"{'|δ|TPFP,FPFP':>13} {'|δ|TPTP,TPFP':>13}")
     for c in range(6):
         print(f"  {G_LABELS[c]:>14} {pg['median_per_component']['TP-TP'][c]:>9.3f} "
               f"{pg['median_per_component']['TP-FP'][c]:>9.3f} {pg['median_per_component']['FP-FP'][c]:>9.3f} "
-              f"{pg['separability_per_component'][c]:>15.3f}")
+              f"{pg['separability_per_component'][c]:>13.3f} {pg['separability_tptp_vs_tpfp'][c]:>13.3f}")
     max_sep = np.nanmax(pg["separability_per_component"]) if pg["separability_per_component"] else float("nan")
-    print(f"  -> max |δ| across components = {max_sep:.3f} "
-          f"({'SOME pairwise geometric signal' if max_sep >= 0.15 else 'WEAK/NO pairwise geometric signal'})")
+    max_sep2 = np.nanmax(pg["separability_tptp_vs_tpfp"]) if pg["separability_tptp_vs_tpfp"] else float("nan")
+    print(f"  -> TP-FP vs FP-FP  max |δ| = {max_sep:.3f}  "
+          f"({'SOME' if max_sep >= 0.15 else 'WEAK/NO'} per-pair FP-suppression signal)")
+    print(f"  -> TP-TP vs TP-FP  max |δ| = {max_sep2:.3f}  "
+          f"({'STRONG' if max_sep2 >= 0.4 else 'SOME' if max_sep2 >= 0.15 else 'WEAK'} co-location/consensus "
+          f"signal — a TP's geometry to co-located TP peers vs to FPs; captured by jointness, nudgeable by Axis-A)")
 
     ss = PD.set_structure(df)
     a = ss["aggregate"]
@@ -74,9 +81,17 @@ def _print_blocks(df: pd.DataFrame, tag: str) -> dict:
           f"pos/set med={a['pos_per_vol_median']:.1f}  neg/set med={a['neg_per_vol_median']:.1f}  "
           f"redundancy med={a['redundancy_median']:.1f}  (total pos {a['total_pos']} / neg {a['total_neg']})")
 
+    ci = PD.confidence_iou_stats(df)
+    print("\n# 5. CONFIDENCE vs IoU  (does score_max track localization quality?)\n")
+    print(f"  corr(score_max, iou_gt): Pearson={ci['pearson_score_iou']:.3f}  Spearman={ci['spearman_score_iou']:.3f}")
+    print(f"  TOP-{ci['k']} by score per set: mean IoU={ci['topk_mean_iou']:.3f}  "
+          f"frac TP={ci['topk_frac_tp']:.3f}  top-1 mean IoU={ci['top1_mean_iou']:.3f}")
+
     return {"feature_discriminability": feat.to_dict(orient="records"), "ranking_headroom": hr,
+            "confidence_iou": {k: v for k, v in ci.items() if k != "scatter"}, "_ci_scatter": ci["scatter"],
             "pairwise_geometry": {"counts": pg["counts"], "median_per_component": pg["median_per_component"],
-                                  "separability_per_component": pg["separability_per_component"]},
+                                  "separability_per_component": pg["separability_per_component"],
+                                  "separability_tptp_vs_tpfp": pg["separability_tptp_vs_tpfp"]},
             "set_structure": ss}
 
 
@@ -125,10 +140,11 @@ def _box_edges(cx, cy, cz, lx, ly, lz):
     return edges
 
 
-def _plot_aggregate(diag: dict, out_dir: Path, tag: str):
+def _plot_aggregate(diag: dict, ci_scatter, out_dir: Path, tag: str):
     feat = pd.DataFrame(diag["feature_discriminability"])
     hr, pg = diag["ranking_headroom"], diag["pairwise_geometry"]
-    fig, ax = plt.subplots(2, 2, figsize=(13, 9)); fig.suptitle(f"Pool diagnostics — {tag}")
+    fig, axg = plt.subplots(2, 3, figsize=(19, 9)); fig.suptitle(f"Pool diagnostics — {tag}")
+    ax = axg  # 2x3; panels (0,0..0,2) and (1,0..1,2)
     # (a) feature discriminability
     f2 = feat.iloc[::-1]
     ax[0, 0].barh(f2["feature"], f2["cliffs_delta"], color="tab:purple")
@@ -141,11 +157,28 @@ def _plot_aggregate(diag: dict, out_dir: Path, tag: str):
     # (c) best-TP-rank hist
     h = hr["best_tp_rank_hist"]; ax[1, 0].bar([int(k) for k in h], [h[k] for k in h], color="tab:green")
     ax[1, 0].set_title("2. Best-TP rank per volume (1 = already top)"); ax[1, 0].set_xlabel("rank (10 = ≥10)")
-    # (d) pairwise geometry separability
-    ax[1, 1].bar(range(6), pg["separability_per_component"], color="tab:orange")
-    ax[1, 1].axhline(0.15, ls="--", color="grey"); ax[1, 1].set_xticks(range(6))
+    # (d) pairwise geometry separability — two contrasts
+    xs = np.arange(6); w = 0.4
+    ax[1, 1].bar(xs - w / 2, pg["separability_per_component"], w, color="tab:orange",
+                 label="TP-FP vs FP-FP (FP-suppression)")
+    ax[1, 1].bar(xs + w / 2, pg["separability_tptp_vs_tpfp"], w, color="tab:blue",
+                 label="TP-TP vs TP-FP (co-location)")
+    ax[1, 1].axhline(0.15, ls="--", color="grey"); ax[1, 1].set_xticks(xs)
     ax[1, 1].set_xticklabels(G_LABELS, rotation=30, ha="right", fontsize=8)
-    ax[1, 1].set_title("3. Axis-A: |δ| TP-FP vs FP-FP per g-component"); ax[1, 1].set_ylabel("|Cliff's δ|")
+    ax[1, 1].set_title("3. Axis-A: pairwise geometry |δ| per g-component")
+    ax[1, 1].set_ylabel("|Cliff's δ|"); ax[1, 1].legend(fontsize=7)
+    # (e) confidence vs IoU scatter
+    if ci_scatter and len(ci_scatter.get("score_max", [])):
+        sm = np.asarray(ci_scatter["score_max"]); io = np.asarray(ci_scatter["iou_gt"])
+        tp = np.asarray(ci_scatter["is_tp"], dtype=bool)
+        ax[0, 2].scatter(sm[~tp], io[~tp], s=5, c="tab:red", alpha=0.25, label="FP")
+        ax[0, 2].scatter(sm[tp], io[tp], s=6, c="tab:green", alpha=0.4, label="TP")
+        ax[0, 2].axhline(0.3, ls="--", color="grey")
+        ax[0, 2].set_title("5. score_max vs IoU(GT)"); ax[0, 2].set_xlabel("score_max")
+        ax[0, 2].set_ylabel("IoU with GT"); ax[0, 2].legend(fontsize=7)
+    else:
+        ax[0, 2].axis("off")
+    ax[1, 2].axis("off")
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     p = out_dir / f"pool_diag_{tag}_aggregate.png"; fig.savefig(p, dpi=110); plt.close(fig)
     return p
@@ -201,8 +234,132 @@ def _plot_volume(gvol: pd.DataFrame, gt, out_dir: Path, tag: str, want_html: boo
     return written
 
 
+# ----------------------------------------------------------------------------- exact GT + volume loaders
+def _load_official_gt_map(split: str, data_root, phase1_out):
+    """{public_id: (cx,cy,cz,lx,ly,lz)} EXACT official GT boxes; {} + warn if the data is unavailable."""
+    try:
+        import argparse as _ap
+        from _phase3_common import load_official_gt, gt_official_tuple
+        ns = _ap.Namespace(data_root=str(data_root), phase1_out=str(phase1_out))
+        gt = load_official_gt(ns, split).set_index("public_id")
+        return {int(v): gt_official_tuple(gt, int(v)) for v in gt.index}
+    except Exception as e:
+        print(f"  (exact GT unavailable for {split}: {type(e).__name__}: {e}; falling back to TP-candidate proxy)")
+        return {}
+
+
+def _load_iso_gt_and_vol(phase1_out, pid: int, want_volume: bool):
+    """(iso_gt_storage_box, iso_volume|None). iso_gt = mask bbox in iso voxel space; None on failure."""
+    try:
+        from abus_jcr import cache as K
+        from abus_jcr.geometry import mask_to_box_storage
+        croot = Path(phase1_out) / "cache"
+        mask = np.asarray(K.open_mask(croot, int(pid))) > 0
+        iso_gt = mask_to_box_storage(mask.astype(np.uint8))          # (min_d0,min_d1,min_d2,max_d0,max_d1,max_d2)
+        vol = np.asarray(K.open_vol(croot, int(pid))) if want_volume else None
+        return iso_gt, vol
+    except Exception as e:
+        print(f"  (iso GT/volume unavailable for vol {pid}: {type(e).__name__}; boxes drawn without volume)")
+        return None, None
+
+
+# ----------------------------------------------------------------------------- top-10 BOX viz (iso space)
+def _iso_box(row):
+    """iso storage box (min_d0,min_d1,min_d2,max_d0,max_d1,max_d2) from a candidate's iso centre+extent."""
+    return (row.cen_d0 - row.ext_d0 / 2, row.cen_d1 - row.ext_d1 / 2, row.cen_d2 - row.ext_d2 / 2,
+            row.cen_d0 + row.ext_d0 / 2, row.cen_d1 + row.ext_d1 / 2, row.cen_d2 + row.ext_d2 / 2)
+
+
+def _rect(ax, box, ha, va, color, lw=1.6):
+    """Draw the (ha, va) face of an iso box (axis indices 0=d0,1=d1,2=d2) as an unfilled rectangle."""
+    mn, mx = box[:3], box[3:]
+    ax.add_patch(mpatches.Rectangle((mn[ha], mn[va]), mx[ha] - mn[ha], mx[va] - mn[va],
+                                    fill=False, edgecolor=color, lw=lw))
+
+
+def _box_edges_iso(box):
+    """12 edges of an iso min/max box as ((x0,x1),(y0,y1),(z0,z1)) with x=d1, y=d0, z=d2."""
+    mn, mx = box[:3], box[3:]
+    xs, ys, zs = [mn[1], mx[1]], [mn[0], mx[0]], [mn[2], mx[2]]
+    corners = [(xs[i], ys[j], zs[k]) for i in (0, 1) for j in (0, 1) for k in (0, 1)]
+    edges = []
+    for a in range(8):
+        for b in range(a + 1, 8):
+            if sum(corners[a][d] != corners[b][d] for d in range(3)) == 1:
+                edges.append(tuple(zip(corners[a], corners[b])))
+    return edges
+
+
+def _plot_top10_boxes(gset: pd.DataFrame, iso_gt, volume, out_dir: Path, tag: str, want_html: bool, k: int = 10):
+    """Top-k candidates as BOXES over the volume MIP: TP=yellow, FP=red, GT=green; + IoU side table + 3D."""
+    top = gset.sort_values("score_max", ascending=False, kind="stable").head(k).reset_index(drop=True)
+    # (name, horiz-axis, vert-axis, MIP-axis) with x=d1, y=d0, z=d2; volume shape [d0,d1,d2]
+    projs = [("axial x–y (MIP over z)", 1, 0, 2), ("sagittal y–z (MIP over x)", 2, 0, 1),
+             ("coronal x–z (MIP over y)", 2, 1, 0)]
+    fig = plt.figure(figsize=(17, 9))
+    fig.suptitle(f"{tag} — top-{k} candidates as BOXES  (TP=yellow  FP=red  GT=green)")
+    gs = gridspec.GridSpec(2, 3, figure=fig, height_ratios=[1.1, 1])
+    for i, (name, ha, va, mip_ax) in enumerate(projs):
+        ax = fig.add_subplot(gs[0, i])
+        if volume is not None:
+            mip = np.asarray(volume).max(axis=mip_ax)                 # rows = lower rem-axis, cols = higher
+            vmin, vmax = np.percentile(mip, [2, 99.5])
+            ax.imshow(mip, origin="lower", extent=[0, mip.shape[1], 0, mip.shape[0]],
+                      cmap="gray", vmin=vmin, vmax=vmax, aspect="auto")
+        if iso_gt is not None:
+            _rect(ax, iso_gt, ha, va, "lime", lw=2.2)
+        for _, r in top.iterrows():
+            _rect(ax, _iso_box(r), ha, va, "yellow" if r.label == "pos" else "red")
+        ax.set_title(name, fontsize=9)
+    # 3D box wireframes (no volume — too heavy)
+    ax3 = fig.add_subplot(gs[1, 0], projection="3d")
+    if iso_gt is not None:
+        for ex, ey, ez in _box_edges_iso(iso_gt):
+            ax3.plot(ex, ey, ez, color="lime", lw=2.0)
+    for _, r in top.iterrows():
+        for ex, ey, ez in _box_edges_iso(_iso_box(r)):
+            ax3.plot(ex, ey, ez, color=("gold" if r.label == "pos" else "red"), lw=0.9, alpha=0.8)
+    ax3.set_title("3D boxes", fontsize=9); ax3.set_xlabel("x"); ax3.set_ylabel("y"); ax3.set_zlabel("z")
+    # IoU side table
+    axt = fig.add_subplot(gs[1, 1:]); axt.axis("off")
+    cells = [[i + 1, f"{r.score_max:.3f}", f"{r.iou_gt:.3f}", "TP" if r.label == "pos" else "FP"]
+             for i, r in top.iterrows()]
+    tbl = axt.table(cellText=cells, colLabels=["rank", "score_max", "IoU(GT)", "class"], loc="center",
+                    cellLoc="center")
+    tbl.auto_set_font_size(False); tbl.set_fontsize(9); tbl.scale(1, 1.4)
+    for i, r in top.iterrows():                                       # colour the class cell
+        tbl[(i + 1, 3)].set_facecolor("#fff2b3" if r.label == "pos" else "#ffcccc")
+    axt.set_title(f"top-{k} candidates: score_max & IoU with GT box", fontsize=9)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    p = out_dir / f"pool_diag_{tag}_top{k}boxes.png"; fig.savefig(p, dpi=115); plt.close(fig)
+    written = [p]
+
+    if want_html:
+        try:
+            import plotly.graph_objects as go
+        except Exception:
+            return written
+        figh = go.Figure()
+        def _add_box(box, color, nm, meta):
+            for ex, ey, ez in _box_edges_iso(box):
+                figh.add_trace(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=dict(color=color, width=4),
+                                            name=nm, legendgroup=nm, showlegend=False, hovertext=meta, hoverinfo="text"))
+        if iso_gt is not None:
+            _add_box(iso_gt, "green", "GT", "GT box")
+        for i, r in top.iterrows():
+            _add_box(_iso_box(r), "gold" if r.label == "pos" else "red",
+                     "TP" if r.label == "pos" else "FP",
+                     f"rank {i+1}  score={r.score_max:.3f}  IoU={r.iou_gt:.3f}  {r.label}")
+        figh.update_layout(title=f"{tag} — top-{k} boxes (TP=gold FP=red GT=green)",
+                           scene=dict(xaxis_title="x=d1", yaxis_title="y=d0", zaxis_title="z=d2"))
+        ph = out_dir / f"pool_diag_{tag}_top{k}boxes.html"; figh.write_html(str(ph), include_plotlyjs="cdn")
+        written.append(ph)
+    return written
+
+
 # ----------------------------------------------------------------------------- main
-def _run_split(record_base: Path, out_dir: Path, split: str, n_viz: int, want_html: bool):
+def _run_split(record_base: Path, out_dir: Path, split: str, n_viz: int, want_html: bool,
+               gt_off: dict, phase1_out, want_volume: bool):
     if not (record_base.with_suffix(".parquet").exists() or record_base.with_suffix(".csv").exists()):
         print(f"[skip {split}] no record at {record_base}.*")
         return
@@ -213,17 +370,24 @@ def _run_split(record_base: Path, out_dir: Path, split: str, n_viz: int, want_ht
         sub = df if pool == "ALL" else df[df["detector_of_origin"] == pool].reset_index(drop=True)
         out[pool] = _print_blocks(sub, f"{split}/{pool}")
     # visuals on the ALL pool (per-pool would multiply files; ALL is the informative aggregate)
+    ci_scatter = out["ALL"].pop("_ci_scatter", None)
+    for p in out:
+        out[p].pop("_ci_scatter", None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        agg_png = _plot_aggregate(out["ALL"], out_dir, split)
+        agg_png = _plot_aggregate(out["ALL"], ci_scatter, out_dir, split)
         viz = _select_viz_volumes(df, n_viz)
         vfiles = []
         for name, det, pid in viz:
             gvol = df[(df["detector_of_origin"] == det) & (df["public_id"] == pid)].reset_index(drop=True)
-            vfiles += _plot_volume(gvol, _gt_proxy(gvol), out_dir, f"{split}_{name}_{det}_vol{pid}", want_html)
+            tag = f"{split}_{name}_{det}_vol{pid}"
+            official_gt = gt_off.get(int(pid)) or _gt_proxy(gvol)     # EXACT GT if loaded, else proxy
+            vfiles += _plot_volume(gvol, official_gt, out_dir, tag, want_html)
+            iso_gt, vol = _load_iso_gt_and_vol(phase1_out, pid, want_volume)  # exact iso GT + volume
+            vfiles += _plot_top10_boxes(gvol, iso_gt, vol, out_dir, tag, want_html)
     (out_dir / f"pool_diag_{split}.json").write_text(json.dumps(out, indent=2, default=float))
     print(f"\n[{split}] aggregate PNG = {agg_png}")
-    print(f"[{split}] per-volume files = {[str(p.name) for p in vfiles]}")
+    print(f"[{split}] per-set files = {[str(p.name) for p in vfiles]}")
     print(f"[{split}] json = {out_dir / f'pool_diag_{split}.json'}")
 
 
@@ -234,14 +398,20 @@ def main() -> int:
     ap.add_argument("--split", default="both", choices=["train", "val", "both"])
     ap.add_argument("--n-viz-volumes", type=int, default=3)
     ap.add_argument("--no-html", action="store_true", help="skip interactive plotly HTML")
-    ap.add_argument("--data-root", default=None, help="unused (kept for runbook symmetry)")
+    ap.add_argument("--no-volume", action="store_true", help="skip the ultrasound-volume MIP background")
+    ap.add_argument("--data-root", default="/home/maia-user/Andre2/data",
+                    help="dataset root holding the split dirs (for EXACT official GT boxes)")
+    ap.add_argument("--phase1-out", default="/home/maia-user/Andre2/outputs/phase1",
+                    help="Phase-1 out (cache/ = iso volume + GT mask, for the volume background)")
     args = ap.parse_args()
 
     cand_dir = Path(args.candidates_dir) if args.candidates_dir else Path(args.out_root) / "candidates"
     out_dir = Path(args.out_root) / "pool_diag"; out_dir.mkdir(parents=True, exist_ok=True)
     splits = ["train", "val"] if args.split == "both" else [args.split]
     for sp in splits:
-        _run_split(cand_dir / f"candidates_{sp}", out_dir, sp, args.n_viz_volumes, not args.no_html)
+        gt_off = _load_official_gt_map(sp, args.data_root, args.phase1_out)
+        _run_split(cand_dir / f"candidates_{sp}", out_dir, sp, args.n_viz_volumes, not args.no_html,
+                   gt_off, args.phase1_out, not args.no_volume)
     return 0
 
 

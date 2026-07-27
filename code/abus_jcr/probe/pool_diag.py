@@ -197,13 +197,55 @@ def pairwise_geometry(df: pd.DataFrame, max_fpfp_per_vol: int = 200) -> dict:
                                                     cx[j], cy[j], cz[j], w[j], h[j], d[j]))
     g_arrays = {k: (np.asarray(v, float) if v else np.zeros((0, 6))) for k, v in g_by.items()}
     med = {k: (np.median(a, axis=0).tolist() if len(a) else [float("nan")] * 6) for k, a in g_arrays.items()}
-    sep = []
-    for c in range(6):
-        tpfp = g_arrays["TP-FP"][:, c] if len(g_arrays["TP-FP"]) else np.zeros(0)
-        fpfp = g_arrays["FP-FP"][:, c] if len(g_arrays["FP-FP"]) else np.zeros(0)
-        sep.append(abs(_cliffs_delta(tpfp, fpfp)) if len(tpfp) and len(fpfp) else float("nan"))
+
+    def _sep(kind_a, kind_b):
+        out = []
+        for c in range(6):
+            a = g_arrays[kind_a][:, c] if len(g_arrays[kind_a]) else np.zeros(0)
+            b = g_arrays[kind_b][:, c] if len(g_arrays[kind_b]) else np.zeros(0)
+            out.append(abs(_cliffs_delta(a, b)) if len(a) and len(b) else float("nan"))
+        return out
+
+    # TP-FP vs FP-FP: can a TP-involving CROSS pair be told from a random FP-FP pair? (FP-suppression view)
+    # TP-TP vs TP-FP: from a TP's viewpoint, is its geometry to a co-located TP PEER distinguishable from its
+    #   geometry to an FP? (the density/consensus signal — "am I in a tight cluster of real peers?").
     return {"counts": counts, "g": {k: a.tolist() for k, a in g_arrays.items()},
-            "median_per_component": med, "separability_per_component": sep}
+            "median_per_component": med,
+            "separability_per_component": _sep("TP-FP", "FP-FP"),
+            "separability_tptp_vs_tpfp": _sep("TP-TP", "TP-FP")}
+
+
+def confidence_iou_stats(df: pd.DataFrame, k: int = 10) -> dict:
+    """Detector-confidence (``score_max``) vs localization (``iou_gt``) relationship.
+
+    Reports Pearson + Spearman correlation over all candidates, and — for the **top-``k`` by score per
+    SET** (the candidates a low-FP operating point actually keeps) — the mean IoU, the fraction that are
+    TP, and the top-1 mean IoU. A weak score↔IoU correlation means confidence does not track localization
+    quality (rescoring by a learned score can then help). Returns a scatter payload for plotting.
+    """
+    sm = df["score_max"].to_numpy(float)
+    iou = df["iou_gt"].to_numpy(float)
+    ok = np.isfinite(sm) & np.isfinite(iou)
+    pear = float(np.corrcoef(sm[ok], iou[ok])[0, 1]) if ok.sum() > 1 else float("nan")
+    spear = float(np.corrcoef(df["score_max"].rank().to_numpy()[ok],
+                              df["iou_gt"].rank().to_numpy()[ok])[0, 1]) if ok.sum() > 1 else float("nan")
+    topk_iou, topk_is_tp, top1_iou = [], [], []
+    for _det, _pid, g in _set_groups(df):
+        gg = g.sort_values("score_max", ascending=False, kind="stable").head(k)
+        topk_iou += gg["iou_gt"].tolist()
+        topk_is_tp += (gg["label"] == "pos").tolist()
+        top1_iou.append(float(gg["iou_gt"].iloc[0]))
+    return {"k": k, "pearson_score_iou": pear, "spearman_score_iou": spear,
+            "topk_mean_iou": float(np.mean(topk_iou)) if topk_iou else float("nan"),
+            "topk_frac_tp": float(np.mean(topk_is_tp)) if topk_is_tp else float("nan"),
+            "top1_mean_iou": float(np.mean(top1_iou)) if top1_iou else float("nan"),
+            "scatter": {"score_max": sm[ok].tolist(), "iou_gt": iou[ok].tolist(),
+                        "is_tp": (df["label"].to_numpy()[ok] == "pos").tolist()}}
+
+
+def top_k_candidates(gset: pd.DataFrame, k: int = 10) -> pd.DataFrame:
+    """The top-``k`` candidates of ONE set by ``score_max`` desc (for the box viz + IoU side table)."""
+    return gset.sort_values("score_max", ascending=False, kind="stable").head(k).reset_index(drop=True)
 
 
 def set_structure(df: pd.DataFrame, cluster_radius: float = 10.0) -> dict:
