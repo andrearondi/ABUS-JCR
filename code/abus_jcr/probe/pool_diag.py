@@ -248,6 +248,116 @@ def top_k_candidates(gset: pd.DataFrame, k: int = 10) -> pd.DataFrame:
     return gset.sort_values("score_max", ascending=False, kind="stable").head(k).reset_index(drop=True)
 
 
+def iso_box_of_candidate(row) -> tuple:
+    """A record row's ISO storage box ``(min_d0,min_d1,min_d2,max_d0,max_d1,max_d2)``.
+
+    Rebuilt from the frozen ``cen_d*``/``ext_d*`` columns, which
+    ``link.reconstruct.iso_centre_of_tube`` / ``iso_extents_of_tube`` wrote as
+    ``centre = (min+max)/2`` and ``extent = max-min`` — so this recovers the tube's
+    iso hull exactly. This is the box the [P3U2.PD] viz DRAWS; the record's official
+    ``coordX..z_length`` is the same box after ``iso -> native -> ITK``.
+    """
+    return (row.cen_d0 - row.ext_d0 / 2.0, row.cen_d1 - row.ext_d1 / 2.0, row.cen_d2 - row.ext_d2 / 2.0,
+            row.cen_d0 + row.ext_d0 / 2.0, row.cen_d1 + row.ext_d1 / 2.0, row.cen_d2 + row.ext_d2 / 2.0)
+
+
+def box_audit(top: pd.DataFrame, gt_iso) -> pd.DataFrame:
+    """Iso-space audit of drawn candidate boxes against the drawn GT box.
+
+    Answers "the candidate visibly covers the lesion — why is its IoU 0.07?" numerically,
+    and cross-checks the picture against the record:
+
+    - ``iou_iso``    — IoU between the DRAWN boxes (iso space, ``geometry.iou_storage``).
+    - ``iou_gt``     — the RECORDED official-space IoU (native voxels, vendored ``iou_3d``).
+    - ``iou_resid``  — ``|iou_iso - iou_gt|``; must be small (the two spaces differ only by
+      re-gridding quantization — IoU is invariant under per-axis scaling). A LARGE residual
+      means the viz and the record disagree, i.e. a coordinate bug.
+    - ``size_ratio`` — candidate box volume / GT box volume. For a candidate that CONTAINS
+      the GT, IoU is exactly ``1 / size_ratio``: 14x oversize => IoU 0.07, no matter how
+      well-centred it is.
+    - ``centre_dist``— iso-voxel distance between box centres.
+    - ``contains_gt``— True iff the candidate encloses the whole GT box.
+
+    ``gt_iso`` is a storage box; returns an empty frame if it is None.
+    """
+    from ..geometry import box_volume_storage, iou_storage
+    rows = []
+    if gt_iso is None:
+        return pd.DataFrame(columns=["rank", "iou_iso", "iou_gt", "iou_resid", "size_ratio",
+                                     "centre_dist", "contains_gt"])
+    gt_vol = box_volume_storage(gt_iso)
+    gt_c = [(gt_iso[i] + gt_iso[i + 3]) / 2.0 for i in range(3)]
+    for i, r in top.reset_index(drop=True).iterrows():
+        b = iso_box_of_candidate(r)
+        iou_iso = iou_storage(b, gt_iso)
+        rec = float(r.iou_gt) if "iou_gt" in top.columns else float("nan")
+        c = [(b[j] + b[j + 3]) / 2.0 for j in range(3)]
+        rows.append({
+            "rank": int(i) + 1,
+            "iou_iso": iou_iso,
+            "iou_gt": rec,
+            "iou_resid": abs(iou_iso - rec) if np.isfinite(rec) else float("nan"),
+            "size_ratio": (box_volume_storage(b) / gt_vol) if gt_vol > 0 else float("nan"),
+            "centre_dist": float(np.linalg.norm(np.subtract(c, gt_c))),
+            "contains_gt": bool(all(b[j] <= gt_iso[j] for j in range(3))
+                                and all(b[j + 3] >= gt_iso[j + 3] for j in range(3))),
+        })
+    return pd.DataFrame(rows)
+
+
+def localization_quality(df: pd.DataFrame, gt_by_pid: Dict[int, tuple]) -> dict:
+    """How well-SIZED and well-CENTRED are the candidate boxes, pool-wide? (official space)
+
+    The pool-level form of the per-PNG "box size / GT" column. Motivation: a candidate that visibly
+    covers the lesion can still score IoU 0.07 — for a box that CONTAINS the GT, IoU is exactly
+    ``1 / size_ratio``, so a box 2.4x too large per axis is already at 0.07 no matter how well
+    centred. This separates the two ways the pool loses CPM:
+
+    - **over-coverage** (``size_ratio`` >> 1, ``centre_mm`` small) — the reconstructed union hull is
+      too big; the fix is in the linker/reconstruction, not in ranking.
+    - **mis-location** (``centre_mm`` large) — the candidate is somewhere else entirely.
+
+    Reported for (a) ALL candidates, (b) the **best-IoU** candidate per set (the pool's localization
+    ceiling), and (c) the **top-10 by score** per set (what a low-FP operating point actually keeps).
+    ``size_ratio`` is a volume ratio, invariant under the anisotropic voxel spacing; ``centre_mm``
+    converts the official ITK-order voxel offset to millimetres via ``SPACING_STORAGE_MM`` reversed.
+    ``gt_by_pid`` maps ``public_id -> (cx, cy, cz, lx, ly, lz)``; returns ``{}`` if it is empty.
+    """
+    from ..conventions import PERM_STORAGE_TO_ITK, SPACING_STORAGE_MM
+    if not gt_by_pid:
+        return {}
+    sp_itk = np.array([SPACING_STORAGE_MM[PERM_STORAGE_TO_ITK[i]] for i in range(3)], dtype=float)
+
+    def _stats(sub: pd.DataFrame) -> dict:
+        if not len(sub):
+            return {"n": 0}
+        gt = np.array([gt_by_pid[int(p)] for p in sub["public_id"]], dtype=float)
+        cand_v = (sub["x_length"].to_numpy(float) * sub["y_length"].to_numpy(float)
+                  * sub["z_length"].to_numpy(float))
+        gt_v = gt[:, 3] * gt[:, 4] * gt[:, 5]
+        ratio = np.where(gt_v > 0, cand_v / np.where(gt_v > 0, gt_v, 1.0), np.nan)
+        d = (sub[["coordX", "coordY", "coordZ"]].to_numpy(float) - gt[:, :3]) * sp_itk
+        centre_mm = np.linalg.norm(d, axis=1)
+        return {"n": int(len(sub)),
+                "size_ratio_p10": float(np.nanpercentile(ratio, 10)),
+                "size_ratio_med": float(np.nanmedian(ratio)),
+                "size_ratio_p90": float(np.nanpercentile(ratio, 90)),
+                "centre_mm_med": float(np.nanmedian(centre_mm)),
+                "iou_med": float(np.nanmedian(sub["iou_gt"].to_numpy(float)))}
+
+    d = df[df["public_id"].isin(gt_by_pid)]
+    best, top10 = [], []
+    for _det, _pid, g in _set_groups(d):
+        if not len(g):
+            continue
+        best.append(g.loc[g["iou_gt"].idxmax()])
+        top10.append(g.sort_values("score_max", ascending=False, kind="stable").head(10))
+    out = {"all": _stats(d),
+           "best_iou_per_set": _stats(pd.DataFrame(best)) if best else {"n": 0},
+           "top10_by_score": _stats(pd.concat(top10, ignore_index=True)) if top10 else {"n": 0}}
+    return out
+
+
 def set_structure(df: pd.DataFrame, cluster_radius: float = 10.0) -> dict:
     """Per-volume counts (n, pos, neg, ignore, pos:neg) + spatial-cluster redundancy; plus aggregates."""
     from .candidate_diag import cluster_counts

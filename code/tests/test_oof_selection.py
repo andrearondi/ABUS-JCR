@@ -60,13 +60,20 @@ def test_plan_test_uses_three_full_seeds():
 # ---- end-to-end assembly with injected fakes (no torch) --------------------
 
 def _fake_detect_factory():
-    """A stub detector: two IoU-aligned boxes on slices 4,5 -> exactly one tube."""
+    """A stub detector: IoU-aligned boxes on consecutive slices -> exactly one surviving tube.
+
+    Length is tied to ``C.LINK_MIN_TUBE_LEN`` and the peak score to ``C.PREFILTER_SCORE_FLOOR`` so the
+    fixture survives a re-freeze of either. (It was hard-coded to 2 slices and silently started
+    returning an EMPTY pool when [P3U2.7] froze ``LINK_MIN_TUBE_LEN`` 2 -> 8 on 2026-07-24.)
+    """
     def detect_fn(model, cache_root, volume_id, *, score_thresh, nms_thresh, detections_per_img):
+        n = max(2, int(C.LINK_MIN_TUBE_LEN))
+        assert 0.9 >= C.PREFILTER_SCORE_FLOOR and 0.7 >= C.PREFILTER_SCORE_FLOOR, \
+            "fixture scores must clear PREFILTER_SCORE_FLOOR"
         rows = [
-            {"volume_id": int(volume_id), "slice_z": 4, "x1": 10.0, "y1": 20.0,
-             "x2": 30.0, "y2": 40.0, "score": 0.9},
-            {"volume_id": int(volume_id), "slice_z": 5, "x1": 10.0, "y1": 20.0,
-             "x2": 30.0, "y2": 40.0, "score": 0.7},
+            {"volume_id": int(volume_id), "slice_z": 4 + k, "x1": 10.0, "y1": 20.0,
+             "x2": 30.0, "y2": 40.0, "score": 0.9 if k == 0 else 0.7}
+            for k in range(n)
         ]
         df = pd.DataFrame(rows, columns=S.DETECTION_COLUMNS)
         df["volume_id"] = df["volume_id"].astype("int64")

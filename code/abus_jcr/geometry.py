@@ -90,6 +90,47 @@ def iou_official(a: OfficialBox, b: OfficialBox) -> float:
     return iou_3d(a, b)
 
 
+def iou_storage(a: BoxStorage, b: BoxStorage) -> float:
+    """3D IoU of two **storage** boxes (inclusive min/max), via the vendored ``iou_3d``.
+
+    Converts each to ``(centre, full extent)`` in storage order and delegates. The
+    axis permutation cancels (both boxes are permuted identically) and IoU of
+    axis-aligned boxes is invariant under per-axis scaling, so this is the SAME
+    quantity as :func:`iou_official` on the official-space images of the same pair
+    — up to the re-gridding quantization of ``iso_storage_to_native_storage``
+    (measured: median |loss| ~0.002 on TP candidates, [P3U2.diag] §4). Used by the
+    [P3U2.PD] box viz so the picture (iso space) is auditable against the record's
+    official-space ``iou_gt``.
+    """
+    def _ce(b: BoxStorage):
+        return tuple((b[i] + b[i + 3]) / 2.0 for i in range(3)) + tuple(float(b[i + 3] - b[i]) for i in range(3))
+    return float(iou_3d(_ce(a), _ce(b)))
+
+
+def box_volume_storage(b: BoxStorage) -> float:
+    """Volume of a storage box under the same ``full extent = max - min`` convention
+    ``iou_3d`` uses. Zero-thickness on any axis => 0."""
+    return float(max(b[3] - b[0], 0.0) * max(b[4] - b[1], 0.0) * max(b[5] - b[2], 0.0))
+
+
+def native_storage_to_iso_storage(box_storage_native: BoxStorage, meta: dict) -> BoxStorage:
+    """Map a native-voxel storage box FORWARD into isotropic space (Inv. 6).
+
+    The exact inverse of :func:`iso_storage_to_native_storage`: ``iso = (native + 0.5)
+    * f - 0.5`` per storage axis, with ``f = meta["zoom_factors"]``. Lets a Phase-3+
+    diagnostic draw the **official** GT box in the same iso picture as the candidates
+    (the official box is otherwise only reachable in native space). Endpoints are
+    rounded to integer voxel indices; the round trip is exact only up to the coarser
+    grid's quantization (large on the heavily-downsampled depth axis d0).
+    """
+    f = tuple(float(x) for x in meta["zoom_factors"])
+    mn = box_storage_native[0:3]
+    mx = box_storage_native[3:6]
+    mn_iso = tuple(int(round((mn[a] + 0.5) * f[a] - 0.5)) for a in range(3))
+    mx_iso = tuple(int(round((mx[a] + 0.5) * f[a] - 0.5)) for a in range(3))
+    return (mn_iso[0], mn_iso[1], mn_iso[2], mx_iso[0], mx_iso[1], mx_iso[2])
+
+
 def iso_storage_to_native_storage(box_storage_iso: BoxStorage, meta: dict) -> BoxStorage:
     """Map an isotropic-space storage box back to native voxel indices (Inv. 6).
 

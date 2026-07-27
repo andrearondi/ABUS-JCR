@@ -6,7 +6,8 @@ import pytest
 
 from abus_jcr.probe.pool_diag import (feature_discriminability, ranking_headroom,
                                       pairwise_geometry, set_structure, relative_geometry,
-                                      confidence_iou_stats, top_k_candidates, POOL_FEATURES)
+                                      confidence_iou_stats, top_k_candidates, POOL_FEATURES,
+                                      iso_box_of_candidate, box_audit, localization_quality)
 
 
 def _rec(rows):
@@ -15,6 +16,7 @@ def _rec(rows):
             "slice_count": [], "z_span": [], "fill_ratio": [], "centroid_jitter": [], "area_cv": [],
             "rank_norm": [], "coordX": [], "coordY": [], "coordZ": [],
             "x_length": [], "y_length": [], "z_length": [],
+            "cen_d0": [], "cen_d1": [], "cen_d2": [],
             "ext_d0": [], "ext_d1": [], "ext_d2": [], "label": [], "detector_of_origin": [], "iou_gt": []}
     for r in rows:
         for k in cols:
@@ -26,7 +28,8 @@ def _cand(pid, score, label, cx=0.0, cy=0.0, cz=0.0, L=10.0, det="s0", **kw):
     d = dict(public_id=pid, score_max=score, score_mean=score * 0.6, score_std=0.02, score_min=score * 0.3,
              slice_count=20, z_span=25, fill_ratio=0.8, centroid_jitter=0.05, area_cv=0.4, rank_norm=0.5,
              coordX=cx, coordY=cy, coordZ=cz, x_length=L, y_length=L, z_length=L,
-             ext_d0=L, ext_d1=L, ext_d2=L, label=label, detector_of_origin=det)
+             cen_d0=cz, cen_d1=cy, cen_d2=cx, ext_d0=L, ext_d1=L, ext_d2=L,
+             label=label, detector_of_origin=det)
     d.update(kw)
     return d
 
@@ -132,3 +135,72 @@ def test_set_structure_counts():
     assert per["B"]["n"] == 1 and per["B"]["neg"] == 1
     assert ss["aggregate"]["n_volumes"] == 2
     assert ss["aggregate"]["pos_per_vol_median"] == pytest.approx(0.5)
+
+
+# --- [P3U2.PD 2026-07-27] box viz <-> record audit ---
+def test_iso_box_of_candidate_recovers_the_tube_hull_exactly():
+    """The drawn box must be byte-identical to the tube hull the official box was built from."""
+    from abus_jcr.link.reconstruct import (tube_to_iso_storage_box, iso_centre_of_tube,
+                                           iso_extents_of_tube)
+    tube = [(10, (20.0, 30.0, 41.0, 55.0), 0.4),
+            (11, (22.0, 31.0, 46.0, 58.0), 0.5),
+            (12, (19.0, 29.0, 44.0, 51.0), 0.3)]
+    hull = tube_to_iso_storage_box(tube)
+    cen, ext = iso_centre_of_tube(tube), iso_extents_of_tube(tube)
+    row = pd.Series({"cen_d0": cen[0], "cen_d1": cen[1], "cen_d2": cen[2],
+                     "ext_d0": ext[0], "ext_d1": ext[1], "ext_d2": ext[2]})
+    assert iso_box_of_candidate(row) == pytest.approx(tuple(float(v) for v in hull))
+
+
+def test_box_audit_containment_iou_is_exactly_one_over_size_ratio():
+    """THE answer to 'the box covers the lesion, why is IoU 0.07?': for a candidate that
+    CONTAINS the GT, IoU == 1 / size_ratio — over-coverage costs as much as a miss."""
+    gt = (50, 50, 50, 60, 110, 70)                     # extents 10 x 60 x 20 (iso voxels)
+    # concentric candidate, 2x per axis => 8x the volume => IoU 0.125
+    top = _rec([_cand("A", 0.5, "neg", iou_gt=0.125,
+                      cen_d0=55.0, cen_d1=80.0, cen_d2=60.0, ext_d0=20.0, ext_d1=120.0, ext_d2=40.0)])
+    a = box_audit(top, gt).iloc[0]
+    assert bool(a.contains_gt) is True
+    assert a.size_ratio == pytest.approx(8.0)
+    assert a.iou_iso == pytest.approx(1.0 / a.size_ratio, abs=1e-9)
+    assert a.centre_dist == pytest.approx(0.0, abs=1e-9)
+    assert a.iou_resid == pytest.approx(0.0, abs=1e-3)   # picture agrees with the record
+
+
+def test_box_audit_iou_resid_flags_a_viz_record_disagreement():
+    """iou_resid is the tripwire: a record IoU that contradicts the drawn boxes is a coord bug."""
+    gt = (50, 50, 50, 60, 110, 70)
+    top = _rec([_cand("A", 0.5, "pos", iou_gt=0.90,      # record claims a near-perfect hit ...
+                      cen_d0=55.0, cen_d1=80.0, cen_d2=60.0, ext_d0=20.0, ext_d1=120.0, ext_d2=40.0)])
+    a = box_audit(top, gt).iloc[0]                       # ... but the drawn box is 8x too big
+    assert a.iou_iso == pytest.approx(0.125)
+    assert a.iou_resid > 0.05
+
+
+def test_box_audit_empty_when_no_gt():
+    assert len(box_audit(_rec([_cand("A", 0.5, "neg")]), None)) == 0
+
+
+def test_localization_quality_separates_oversize_from_misplacement():
+    """size_ratio >> 1 with a small centre offset = over-coverage (a linker/reconstruction problem);
+    a large centre offset = the candidate is simply elsewhere."""
+    from abus_jcr.probe.pool_diag import localization_quality
+    gt = {1: (100.0, 100.0, 100.0, 10.0, 20.0, 30.0)}     # official (cx,cy,cz,lx,ly,lz)
+    rows = [
+        # concentric but 8x the volume -> IoU 0.125, centre offset 0
+        _cand(1, 0.9, "neg", iou_gt=0.125, cx=100, cy=100, cz=100, det="s0"),
+        # same size as GT, far away
+        _cand(1, 0.4, "neg", iou_gt=0.0, cx=300, cy=100, cz=100, det="s0"),
+    ]
+    rec = _rec(rows)
+    rec.loc[0, ["x_length", "y_length", "z_length"]] = [20.0, 40.0, 60.0]   # 8x
+    rec.loc[1, ["x_length", "y_length", "z_length"]] = [10.0, 20.0, 30.0]   # 1x
+    lq = localization_quality(rec, gt)
+    assert lq["all"]["n"] == 2
+    assert lq["all"]["size_ratio_p10"] == pytest.approx(1.7, abs=0.4)       # between 1x and 8x
+    assert lq["best_iou_per_set"]["size_ratio_med"] == pytest.approx(8.0)   # best IoU = the oversized one
+    assert lq["best_iou_per_set"]["centre_mm_med"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_localization_quality_empty_without_gt():
+    assert localization_quality(_rec([_cand(1, 0.5, "neg")]), {}) == {}

@@ -118,3 +118,44 @@ def test_iso_native_official_iou_above_floor(case_id):
 
     iou = iou_official(official_roundtrip, official_native)
     assert iou >= C.RESAMPLE_IOU_FLOOR, f"case {case_id}: IoU {iou:.3f} < floor"
+
+
+# ---- Part C: the FORWARD map (native -> iso) used by the [P3U2.PD] box viz ----
+
+def test_native_to_iso_is_the_exact_inverse_of_iso_to_native():
+    """native_storage_to_iso_storage must be the analytic inverse of iso_storage_to_native_storage.
+
+    Lets the pool-diagnostic draw the OFFICIAL GT box in the same iso picture as the candidates.
+    """
+    from abus_jcr.geometry import native_storage_to_iso_storage
+    f = zoom_factors()
+    meta = {"zoom_factors": list(f), "native_shape": [865, 682, 349]}
+    box_native = (323, 121, 164, 408, 242, 180)          # Val case 122 GT hull (storage order)
+    got = native_storage_to_iso_storage(box_native, meta)
+    exp = tuple(int(round((box_native[i] + 0.5) * f[i % 3] - 0.5)) for i in range(3)) + \
+        tuple(int(round((box_native[i + 3] + 0.5) * f[i] - 0.5)) for i in range(3))
+    assert got == exp
+    # round trip lands within one iso voxel expressed in native units (1/f per axis)
+    back = iso_storage_to_native_storage(got, meta)
+    for a in range(3):
+        assert abs(back[a] - box_native[a]) <= 1.0 / f[a] + 1
+        assert abs(back[a + 3] - box_native[a + 3]) <= 1.0 / f[a] + 1
+
+
+def test_iou_storage_equals_iou_official_on_the_same_pair():
+    """IoU of axis-aligned boxes is invariant under the storage->ITK permutation, so the viz's
+    iso-space IoU and the record's official-space IoU measure the SAME thing."""
+    from abus_jcr.geometry import iou_storage
+    a = (50, 50, 50, 60, 110, 70)
+    b = (45, 40, 40, 65, 120, 90)
+    assert iou_storage(a, b) == pytest.approx(
+        iou_official(storage_box_to_official(a), storage_box_to_official(b)), abs=1e-12)
+
+
+def test_iou_storage_containment_equals_inverse_volume_ratio():
+    """The arithmetic behind the [P3U2.PD] 'box size / GT' column."""
+    from abus_jcr.geometry import iou_storage, box_volume_storage
+    gt = (50, 50, 50, 60, 110, 70)                    # extents 10 x 60 x 20
+    big = (45, 20, 40, 65, 140, 80)                   # extents 20 x 120 x 40 == 8x, contains gt
+    assert box_volume_storage(big) / box_volume_storage(gt) == pytest.approx(8.0)
+    assert iou_storage(big, gt) == pytest.approx(1.0 / 8.0)
