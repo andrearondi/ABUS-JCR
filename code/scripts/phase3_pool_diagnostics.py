@@ -41,6 +41,7 @@ import matplotlib.gridspec as gridspec  # noqa: E402
 
 from abus_jcr.candidates.record import read_candidate_record  # noqa: E402
 from abus_jcr.probe import pool_diag as PD  # noqa: E402
+from abus_jcr.probe import calibration as CAL  # noqa: E402
 
 G_LABELS = ["log|dx|/w", "log|dy|/h", "log|dz|/d", "log w_n/w_m", "log h_n/h_m", "log d_n/d_m"]
 
@@ -112,7 +113,18 @@ def _print_blocks(df: pd.DataFrame, tag: str, gt_by_pid: dict | None = None) -> 
             print(f"  {nm:>18} {s['n']:>7} {s['size_ratio_p10']:>12.2f} {s['size_ratio_med']:>8.2f} "
                   f"{s['size_ratio_p90']:>8.2f} {s['centre_mm_med']:>14.1f} {s['iou_med']:>8.3f}")
 
+    hcv = CAL.headroom_curve(df)
+    print("\n# 7. CROSS-VOLUME CALIBRATION COST  (the official CPM sweeps ONE GLOBAL threshold)\n")
+    print("  fp_cost = how many non-hitting candidates a global threshold must ALSO admit to surface")
+    print("  this set's first hit (= best_tp_rank - 1). Within-set ranking being good is necessary but")
+    print("  NOT sufficient: a set is only cheap if its hit is near ITS OWN top.")
+    print(f"  sets={hcv['n_sets']}  with a hit={hcv['n_sets_with_hit']}  "
+          f"FREE (hit already rank-1)={hcv['n_sets_free']} ({hcv['frac_sets_free']:.3f})  "
+          f"fp_cost p50={hcv['fp_cost_p50']:.1f} p90={hcv['fp_cost_p90']:.1f} max={hcv['fp_cost_max']:.0f}")
+    print("  -> the official 3-way CPM decomposition (B0 / volume_neutral / per-volume oracle) is [P3U2.12].")
+
     return {"feature_discriminability": feat.to_dict(orient="records"), "ranking_headroom": hr,
+            "calibration_cost": {k: v for k, v in hcv.items() if k != "per_set"},
             "confidence_iou": {k: v for k, v in ci.items() if k != "scatter"}, "_ci_scatter": ci["scatter"],
             "pairwise_geometry": {"counts": pg["counts"], "median_per_component": pg["median_per_component"],
                                   "separability_per_component": pg["separability_per_component"],
