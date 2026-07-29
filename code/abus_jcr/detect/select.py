@@ -63,6 +63,54 @@ def select_epoch(epoch_cpms: Dict[int, float], min_epoch: int,
     return int(best_e)
 
 
+def select_epoch_guarded(epoch_cpms: Dict[int, float], epoch_ceilings: Dict[int, float],
+                         min_epoch: int, coverage_floor: float, cpm_guard: float,
+                         epoch_pools: Optional[Dict[int, float]] = None,
+                         pool_budget: Optional[float] = None, cpm_tol: float = 0.0) -> int:
+    """[CONTINGENCY policy — NOT the deployed rule] coverage-floor selection with a CPM guard.
+
+    Rationale (P3U3, 2026-07-29). For the **fold** detectors the deployed CPM-first rule optimises a
+    number that is never reported (fold CPM appears in no result) while ignoring **coverage** — the
+    fraction of training sets that contain a positive — which directly gates the rescorer's training
+    signal (Phase-4 §2: a set with no positive contributes NOTHING to the listwise ranking loss). This
+    rule instead requires a coverage floor, then maximises CPM among the qualifying epochs:
+
+        ceiling >= coverage_floor  AND  cpm >= max_cpm - cpm_guard  AND  pool <= pool_budget
+        -> argmax CPM (ties -> earliest epoch);  otherwise -> :func:`select_epoch` (deployed rule).
+
+    The ``cpm_guard`` blocks *degenerate* early checkpoints that clear the coverage floor only because
+    they are barely converged (observed: fold4's epoch 5 at CPM 0.14 vs its 0.41 max). The fallback
+    means this rule can never do worse than the deployed pick on a run it cannot improve.
+
+    Simulated on the recorded per-epoch tables (P3U2.SIM, floor 0.80 / guard 0.15): fold coverage
+    0.697 -> 0.807 at a fold-CPM cost of 0.042, with **all three seed detectors unchanged** — i.e. the
+    evaluation pool, the operating point and B0' are untouched. Adopting it as the DEPLOYED rule would
+    require an Inv. 2 / A1 amendment; using it to build a side-by-side contingency training pool does not.
+    """
+    cands = {e: c for e, c in epoch_cpms.items() if int(e) >= int(min_epoch)}
+    finite = {e: float(c) for e, c in cands.items()
+              if c is not None and not math.isnan(float(c))}
+    if finite:
+        max_cpm = max(finite.values())
+
+        def _ok(e: int) -> bool:
+            ceil = epoch_ceilings.get(e)
+            if ceil is None or math.isnan(float(ceil)) or float(ceil) < float(coverage_floor):
+                return False
+            if finite[e] < max_cpm - float(cpm_guard):
+                return False
+            if pool_budget is not None and epoch_pools is not None:
+                p = epoch_pools.get(e)
+                if p is not None and not math.isnan(float(p)) and float(p) > float(pool_budget):
+                    return False
+            return True
+
+        ok = [e for e in finite if _ok(e)]
+        if ok:                                   # highest CPM among the qualifying epochs, earliest on ties
+            return int(min(ok, key=lambda e: (-finite[e], int(e))))
+    return select_epoch(epoch_cpms, min_epoch, epoch_ceilings, cpm_tol)   # documented fallback
+
+
 def selection_stability(epoch_cpms: Dict[int, float], min_epoch: int, top_k: int = 3) -> Tuple[float, list]:
     """Spread of the top-``top_k`` qualifying CPMs — a low-resolution flag for the report.
 

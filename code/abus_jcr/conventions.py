@@ -185,6 +185,17 @@ DET_SELECT_CPM_TOL      = 0.02     # CPM within this of the max is a tie on 30 v
 DET_SELECT_OP_THRESH    = 0.03     # reference op for post-hoc selection. NOTE (P3U): the retrained detector
                                    # de-compressed its scores, so 0.03 sits ABOVE its recall knee — after
                                    # [P3U.4b] reveals the saturating op, set this to it and re-select Stage-2.
+# [P3U3 2026-07-29] CONTINGENCY selection policy — **NOT DEPLOYED**. The deployed rule is unchanged
+# (DET_SELECTION_METRIC above: max linked-val CPM with the ceiling tie-break). These two constants
+# parameterise `detect.select.select_epoch_guarded`, used ONLY to build the side-by-side high-coverage
+# TRAINING pool (candidates_train_hicov) held in reserve for Phase 4. Promoting it to the deployed rule
+# would require an Inv. 2 / A1 amendment. Simulated effect (P3U2.SIM): fold coverage 0.697 -> 0.807,
+# fold CPM -0.042, ALL SEEDS UNCHANGED (evaluation/B0'/operating point untouched), max pool 187 <= budget.
+DET_SELECT_COVERAGE_FLOOR = 0.80   # min recall ceiling an epoch must reach to qualify (matches the seeds'
+                                   # 0.867 evaluation coverage -> Inv.-10 train/eval distribution match)
+DET_SELECT_CPM_GUARD      = 0.15   # max CPM shortfall vs the run's best epoch; blocks degenerate
+                                   # unconverged checkpoints (fold4 ep5: CPM 0.14 vs 0.41 max). 0.20 is
+                                   # equivalent on the recorded tables (robustness plateau); 0.10 is too tight.
 DET_SELECTION_FP_BUDGETS = (0.125, 0.25, 0.5, 1, 2, 4, 8)  # per-SLICE FP budgets for the LOGGED diagnostic
                                    # proxy only (mirror KEY_FP's numbers; NOT the Inv.-3 per-volume metric).
 DET_EARLYSTOP_PATIENCE  = 10       # RETIRED (P3-UPDATE D2): no early stopping. Kept for back-compat only.

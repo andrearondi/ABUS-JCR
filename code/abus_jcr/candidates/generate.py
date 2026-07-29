@@ -30,7 +30,20 @@ from ..link.nms import reduce_pool_3dnms
 from .record import CANDIDATE_COLUMNS
 
 
-def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir) -> List[dict]:
+def _resolve_checkpoint(checkpoints_dir: Path, run: str, det: str, epoch_overrides: dict) -> Path:
+    """Deployed ``<run>.pt`` by default; ``<run>/epoch{NN}.pt`` when ``det`` is in ``epoch_overrides``.
+
+    [P3U3] The override lets a SIDE-BY-SIDE pool be generated from alternative epochs **without
+    re-deploying anything** — the deployed ``<run>.pt`` files (and everything validated on them:
+    the operating point, B0', the FP probe) stay byte-untouched.
+    """
+    if det in epoch_overrides:
+        return checkpoints_dir / run / f"epoch{int(epoch_overrides[det]):02d}.pt"
+    return checkpoints_dir / f"{run}.pt"
+
+
+def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir,
+                    epoch_overrides: Optional[dict] = None) -> List[dict]:
     """Torch-free routing: which checkpoint scores which volumes (Inv. 10, 14).
 
     Returns a list of ``{detector_of_origin, checkpoint, volume_ids, split, fold_of}``
@@ -41,16 +54,21 @@ def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir) -> List
       volume to its fold (== f for that job).
     - **val**/**test**: one job per seed in ``DET_FULL_SEEDS``, each scoring **all** the
       split's volumes with ``retinanet_full_seed{s}.pt``; ``fold_of`` is ``-1`` for all.
+
+    ``epoch_overrides`` maps ``detector_of_origin`` -> epoch (e.g. ``{"fold2": 10}``) and points that
+    detector at its saved per-epoch checkpoint instead of the deployed one (P3U3 contingency pool).
     """
     checkpoints_dir = Path(checkpoints_dir)
+    epoch_overrides = epoch_overrides or {}
     sel = manifest[manifest["split"] == split]
     jobs: List[dict] = []
     if split == "train":
         for f in sorted(int(x) for x in sel["fold"].unique()):
             vids = sorted(int(v) for v in sel[sel["fold"] == f]["volume_id"])
+            det = f"fold{f}"
             jobs.append({
-                "detector_of_origin": f"fold{f}",
-                "checkpoint": checkpoints_dir / f"retinanet_fold{f}.pt",
+                "detector_of_origin": det,
+                "checkpoint": _resolve_checkpoint(checkpoints_dir, f"retinanet_fold{f}", det, epoch_overrides),
                 "volume_ids": vids,
                 "split": split,
                 "fold_of": {v: f for v in vids},
@@ -58,9 +76,11 @@ def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir) -> List
     elif split in ("val", "test"):
         vids = sorted(int(v) for v in sel["volume_id"])
         for s in C.DET_FULL_SEEDS:
+            det = f"full_seed{s}"
             jobs.append({
-                "detector_of_origin": f"full_seed{s}",
-                "checkpoint": checkpoints_dir / f"retinanet_full_seed{s}.pt",
+                "detector_of_origin": det,
+                "checkpoint": _resolve_checkpoint(checkpoints_dir, f"retinanet_full_seed{s}", det,
+                                                  epoch_overrides),
                 "volume_ids": vids,
                 "split": split,
                 "fold_of": {v: -1 for v in vids},
@@ -195,6 +215,7 @@ def generate_split(
     read_meta_fn: Optional[Callable] = None,
     detections_cache_dir=None,
     progress: bool = False,
+    epoch_overrides: Optional[dict] = None,
 ) -> pd.DataFrame:
     """Generate the full candidate pool for ``split`` (Inv. 9, 10, 14).
 
@@ -213,7 +234,7 @@ def generate_split(
     read_meta_fn = read_meta_fn or K.read_meta
 
     gt_idx = gt_gt_df.set_index("public_id")
-    jobs = plan_generation(manifest, split, checkpoints_dir)
+    jobs = plan_generation(manifest, split, checkpoints_dir, epoch_overrides)
 
     all_rows: List[pd.DataFrame] = []
     for job in jobs:

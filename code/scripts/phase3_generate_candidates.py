@@ -28,17 +28,17 @@ from _phase3_common import (add_phase3_paths, assert_device, cache_root, checkpo
                             load_manifest, load_official_gt)
 
 
-def _write_pred_csvs(pool, split: str, out_dir: Path):
+def _write_pred_csvs(pool, split: str, out_dir: Path, suffix: str = ""):
     """Train -> one combined pred CSV; Val/Test -> one per detector_of_origin (seed)."""
     written = []
     if split == "train":
-        p = out_dir / "pred_train.csv"
+        p = out_dir / f"pred_train{suffix}.csv"
         to_official_pred_csv(pool, prob_col="score_max", path=p)
         written.append(p)
     else:
         for det in sorted(pool["detector_of_origin"].unique()):
             sub = pool[pool["detector_of_origin"] == det].reset_index(drop=True)
-            p = out_dir / f"pred_{split}_{det}.csv"
+            p = out_dir / f"pred_{split}_{det}{suffix}.csv"
             to_official_pred_csv(sub, prob_col="score_max", path=p)
             written.append(p)
     return written
@@ -51,6 +51,15 @@ def main() -> int:
     parser.add_argument("--op-score-thresh", type=float, default=C.LINK_OP_SCORE_THRESH,
                         help="frozen operating point (default conventions.LINK_OP_SCORE_THRESH; "
                              "set to the [3.4]-calibrated value if conventions not yet updated)")
+    parser.add_argument("--fold-epochs", default=None,
+                        help="[P3U3] contingency pool: comma-separated <fold>:<epoch> overrides, e.g. "
+                             "'1:3,2:10,3:6'. Reads checkpoints/retinanet_fold<f>/epoch<NN>.pt instead of "
+                             "the deployed retinanet_fold<f>.pt — the deployed files are NOT touched.")
+    parser.add_argument("--seed-epochs", default=None,
+                        help="[P3U3] same, for the full-train seeds: '<seed>:<epoch>,...' (rarely needed)")
+    parser.add_argument("--record-suffix", default="",
+                        help="[P3U3] suffix for the output record/pred files, e.g. 'hicov' -> "
+                             "candidates_train_hicov.parquet. Empty (default) = the primary pool.")
     parser.add_argument("--phase5-execute", action="store_true",
                         help="required to run --split test (Inv. 9: Test touched only in Phase 5)")
     parser.add_argument("--no-cache", action="store_true",
@@ -66,16 +75,35 @@ def main() -> int:
     manifest = load_manifest(args)
     gt_df = load_official_gt(args, args.split)
 
-    cache_dir = None if args.no_cache else str(Path(args.out_root) / "detections_cache")
+    # [P3U3] epoch overrides -> {detector_of_origin: epoch}; the deployed <run>.pt files stay untouched.
+    def _parse(spec, prefix):
+        out = {}
+        for part in (spec or "").split(","):
+            if part.strip():
+                k, v = part.split(":")
+                out[f"{prefix}{int(k.strip())}"] = int(v.strip())
+        return out
+
+    epoch_overrides = {**_parse(args.fold_epochs, "fold"), **_parse(args.seed_epochs, "full_seed")}
+    suffix = f"_{args.record_suffix}" if args.record_suffix else ""
+    if epoch_overrides:
+        print(f"# [P3U3] epoch overrides (deployed checkpoints NOT modified): {epoch_overrides}")
+        if not suffix:
+            raise SystemExit("refusing to overwrite the PRIMARY record with an overridden pool: "
+                             "pass --record-suffix (e.g. --record-suffix hicov)")
+
+    # separate detection cache per pool variant, so the two pools never share cached detections
+    cache_dir = None if args.no_cache else str(Path(args.out_root) / f"detections_cache{suffix}")
     pool = generate_split(
         manifest, cache_root(args), checkpoints_dir(args), args.split, gt_df,
-        op_score_thresh=args.op_score_thresh, detections_cache_dir=cache_dir, progress=True)
+        op_score_thresh=args.op_score_thresh, detections_cache_dir=cache_dir, progress=True,
+        epoch_overrides=epoch_overrides or None)
 
     out_dir = Path(args.out_root) / "candidates"
     out_dir.mkdir(parents=True, exist_ok=True)
-    rec_base = out_dir / f"candidates_{args.split}"
+    rec_base = out_dir / f"candidates_{args.split}{suffix}"
     fmt = write_candidate_record(pool, rec_base)
-    preds = _write_pred_csvs(pool, args.split, out_dir)
+    preds = _write_pred_csvs(pool, args.split, out_dir, suffix)
 
     n_pos = int((pool["label"] == "pos").sum())
     n_neg = int((pool["label"] == "neg").sum())
