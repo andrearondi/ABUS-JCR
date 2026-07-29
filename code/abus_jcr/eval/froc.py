@@ -22,7 +22,7 @@ __all__ = [
     "evaluate", "iou_3d",
     "evaluate_froc_paths", "evaluate_froc",
     "cpm", "recall_ceiling", "key_recall",
-    "write_pred_csv", "bootstrap_cpm_ci",
+    "write_pred_csv", "bootstrap_cpm_ci", "paired_bootstrap_delta",
 ]
 
 
@@ -128,6 +128,75 @@ def bootstrap_cpm_ci(
     lo = float(np.quantile(boots, alpha))
     hi = float(np.quantile(boots, 1.0 - alpha))
     return {"point": float(point), "lo": lo, "hi": hi, "boot": boots}
+
+
+def paired_bootstrap_delta(
+    gt_df: pd.DataFrame,
+    pred_a: pd.DataFrame,
+    pred_b: pd.DataFrame,
+    n_boot: int = 1000,
+    seed: int = 0,
+    ci: float = 0.95,
+) -> dict:
+    """PAIRED volume-level bootstrap CI on ``CPM(a) - CPM(b)`` (Inv. 12; Phase 4 §4.9).
+
+    Resample the set of GT ``public_id``s **once per draw** and score **both** conditions on
+    that same resample, exactly mirroring :func:`bootstrap_cpm_ci`'s relabelling so the
+    oracle treats duplicated volumes as distinct. Because Phase-4/5 conditions re-rank the
+    **identical** pool (Inv. 8) — same rows, same boxes, only ``probability`` differs — the
+    shared volume-level variance cancels inside each draw and the paired interval is far
+    tighter than the difference of two marginal intervals.
+
+    Returns ``{delta_point, lo, hi, frac_positive, n_boot, boot}`` where ``delta_point`` is
+    the difference on the UNRESAMPLED data and ``frac_positive`` is the fraction of draws
+    favouring ``a`` — the number the report quotes next to every comparison.
+    """
+    _require_columns(gt_df, GT_COLUMNS, "gt_df")
+    _require_columns(pred_a, PRED_COLUMNS, "pred_a")
+    _require_columns(pred_b, PRED_COLUMNS, "pred_b")
+
+    pids = list(pd.unique(gt_df["public_id"]))
+    delta_point = cpm(evaluate_froc(gt_df, pred_a)) - cpm(evaluate_froc(gt_df, pred_b))
+
+    gt_by_pid = {pid: gt_df[gt_df["public_id"] == pid] for pid in pids}
+    a_by_pid = {pid: pred_a[pred_a["public_id"] == pid] for pid in pids}
+    b_by_pid = {pid: pred_b[pred_b["public_id"] == pid] for pid in pids}
+
+    rng = np.random.default_rng(seed)
+    n = len(pids)
+    boots = []
+    for _ in range(n_boot):
+        draw = rng.choice(n, size=n, replace=True)
+        gt_parts, a_parts, b_parts = [], [], []
+        for new_id, src_idx in enumerate(draw):
+            pid = pids[src_idx]
+            g = gt_by_pid[pid].copy()
+            g["public_id"] = new_id
+            gt_parts.append(g)
+            for src, parts in ((a_by_pid[pid], a_parts), (b_by_pid[pid], b_parts)):
+                if len(src) > 0:
+                    p = src.copy()
+                    p["public_id"] = new_id
+                    parts.append(p)
+        gt_boot = pd.concat(gt_parts, ignore_index=True)
+
+        def _stack(parts):
+            return (pd.concat(parts, ignore_index=True) if parts
+                    else pd.DataFrame(columns=PRED_COLUMNS))
+
+        boots.append(cpm(evaluate_froc(gt_boot, _stack(a_parts)))
+                     - cpm(evaluate_froc(gt_boot, _stack(b_parts))))
+
+    boots = np.asarray(boots, dtype=float)
+    alpha = (1.0 - ci) / 2.0
+    return {
+        "delta_point": float(delta_point),
+        "lo": float(np.quantile(boots, alpha)),
+        "hi": float(np.quantile(boots, 1.0 - alpha)),
+        "frac_positive": float((boots > 0).mean()),
+        "n_boot": int(n_boot),
+        "boot": boots,
+    }
 
 
 def _require_columns(df: pd.DataFrame, cols: Iterable[str], what: str) -> None:

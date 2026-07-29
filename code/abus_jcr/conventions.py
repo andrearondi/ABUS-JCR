@@ -311,3 +311,77 @@ SCORE_STAT_COLUMNS = ["score_max", "score_mean", "score_std", "score_min",
 # Pruned at [P3U2.diag]: area_peak_pos (no TP/FP signal) and area_monotonicity (length-confounded,
 # redundant with slice_count/area_cv) — both dropped; the two survivors validated as discriminative.
 TUBE_GEOM_COLUMNS = ["centroid_jitter", "area_cv"]
+
+# ============================================================================
+# Phase 4 — RG-FROC-Rescorer (set rescorer over the frozen Phase-3 pool)
+# ============================================================================
+# --- 4 (A): the 3D crop the shared encoder sees (Inv. 5, 6) ------------------
+# ADAPTIVE CUBIC ROI, not a fixed 48^3 voxel box. PHASE_4.md §1.1 offers 48^3 (NoduleSAT)
+# "unless the size audit shows lesions routinely exceeding this" — it does: Train union-box
+# in-plane diag p1/p50/p99 = 6.7/54.1/231.1 iso px (RESULTS_PHASE_2_UPDATE [2.0']) and the
+# Train GT in-plane extent p99 = 228 iso px / z-extent p99 = 101 iso slices (the [3.3'] cap
+# derivation). A 48-voxel (19.2 mm) box is smaller than the MEDIAN lesion's in-plane diagonal.
+# Local check (6 Val cases): GT iso extents d0 8-54, d1 40-183, d2 16-86 -> a fixed 48^3 crop
+# fails to contain the lesion in 5/6 cases. So the ROI is sized from the CANDIDATE's own iso
+# extents and resampled to a fixed grid (PHASE_4.md's second sanctioned option).
+RESC_CROP_OUT        = 48    # output grid, 48^3 (the NoduleSAT tensor size is kept)
+RESC_CROP_CONTEXT    = 1.5   # ROI side = CONTEXT * max(ext_d0, ext_d1, ext_d2)
+RESC_CROP_MIN_SIDE   = 48    # iso vox (19.2 mm): never UPSAMPLE (resample factor <= 1 always)
+RESC_CROP_MAX_SIDE   = 160   # iso vox (64 mm) == DET_MIN_SIZE == round_up(max Train iso d0
+                             # frame, 32). An ROI deeper than the volume itself can only add
+                             # zero padding, never real context.
+RESC_CROP_INTERP     = 1     # trilinear (scipy.ndimage.map_coordinates order=1)
+RESC_CROP_PAD_VALUE  = 0.0   # outside the volume = anechoic black; NEVER edge-replication
+                             # (replicating the skin line downward is acoustically impossible)
+# --- 4 (B): the shared 3D encoder (Inv. 5) ----------------------------------
+RESC_ENCODER         = "monai_densenet121_3d"   # PHASE_4.md §1.1 default (NoduleSAT backbone)
+RESC_ENCODER_DROPOUT = 0.2
+RESC_D_APP           = 128   # appearance embedding width after GAP + linear
+RESC_ENC_EPOCHS      = 30    # fixed annealed budget, save every epoch, post-hoc selection
+RESC_ENC_BATCH       = 32
+RESC_ENC_OPT         = {"name": "AdamW", "lr": 1e-4, "weight_decay": 0.05}
+RESC_ENC_AUG         = {"hflip_d1_p": 0.5, "centre_jitter_frac": 0.10}  # Inv. 13; NO d0 flip
+# Pre-registered FALLBACK encoder (spec Open escalation #2). NOT deployed. Fires only if exit
+# check 4 fails (B1 val CPM <= B0 0.5567): swap to a 4-block ~1M-param 3D CNN and re-run [4.3].
+RESC_ENCODER_FALLBACK = "small_cnn_3d"
+RESC_SMALL_CNN_WIDTHS = (16, 32, 64, 128)
+# --- 4 (C): the per-candidate token (§1.2) ----------------------------------
+RESC_RANK_PE_DIM     = 16    # sinusoidal embedding width of the integer `rank`
+RESC_TOKEN_BLOCKS    = ("appearance", "abs_geom", "score_stats", "tube_geom", "rank")
+# --- 4 (D): the set module (§1.3) -------------------------------------------
+RESC_SET_CAPACITY_GRID = (("L2H128h4", 2, 128, 4), ("L2H256h8", 2, 256, 8))  # selected ONCE on B2
+RESC_SET_DROPOUT     = 0.1
+RESC_SET_EPOCHS      = 60
+RESC_SET_BATCH_SETS  = 8     # sets per step, padded + masked
+RESC_SET_OPT         = {"name": "AdamW", "lr": 1e-3, "weight_decay": 0.01}
+RESC_MAX_SET_SIZE    = 320   # hard pad width. Largest RECORDED set = 253 (seed0 post-floor tube
+                             # stats, [P3U2.10]); the per-seed maxima are not all recorded, so [4.1]
+                             # ASSERTS the true max over both pools and fails loudly if it exceeds.
+RESC_NEG_POS_RATIO   = None  # NO negative subsampling: train sets == eval sets exactly, and the
+                             # listwise loss is imbalance-robust to >=1:10 000 (RS-loss, ICCV'21
+                             # Tab. S7). If Phase 6 ever needs it, the SAME ratio for all detectors.
+# --- 4 (E): the Axis-A relative-geometry bias (§1.4) ------------------------
+RESC_GEOM_MECHANISM  = "additive"   # iRPE-style per-head bias (DEFAULT); "multiplicative" fallback
+RESC_GEOM_PE_DIM     = 64           # sinusoidal embedding of g(m,n)
+RESC_GEOM_EPS        = 1e-6         # MUST equal probe/pool_diag.EPS (byte-identical descriptor)
+# --- 4 (F): losses (§2) -----------------------------------------------------
+RESC_LOSS_RANK       = "smooth_ap"  # Phase-0a single-lesion dominance (99/100 Train, 29/30 Val)
+                                    # -> the RS "sort positives by IoU" term is inert; DO NOT use RS.
+RESC_SMOOTH_AP_TAU   = 0.01         # sigmoid temperature of the rank indicator
+RESC_FOCAL_GAMMA     = 2.0
+RESC_CE_SEARCH       = ({"alpha": 0.25, "lr": 1e-3}, {"alpha": 0.50, "lr": 1e-3},
+                        {"alpha": 0.25, "lr": 3e-4}, {"alpha": 0.50, "lr": 3e-4})   # 4 trials
+RESC_LAMBDA_SEARCH   = (0.1, 0.3, 1.0, 3.0)   # 4 trials for the ranking variants (lr/alpha = B2's)
+RESC_LAMBDA_DIAGNOSTIC = 0.0        # pure-ranking endpoint: REPORTED, excluded from selection
+# --- 4 (G): seeds + selection ----------------------------------------------
+RESC_SEEDS           = (0, 1, 2)    # rescorer seed r is PAIRED with detector full_seed{r}
+RESC_SELECT_METRIC   = "val_cpm"    # official average_recall; NEVER val loss
+RESC_SELECT_CPM_TOL  = 0.02         # within this of the max = a tie on 30 val lesions -> earliest epoch
+RESC_PROB_EPS        = 1e-6         # clamp sigmoid to [0, 1-eps) for the det_score sweep
+# --- 4 (H): the recorded Phase-3 floor this phase must beat (read-only) -----
+# [P3U2.12] B0 = the frozen pool ranked by score_max. Used by the exit gates, never as a target
+# to tune toward. Recall ceiling is rung-invariant by Inv. 8.
+RESC_B0_CPM          = 0.5567
+RESC_B0_CPM_STD      = 0.0109
+RESC_RECALL_CEILING  = 0.8667
+RESC_RECALL_CEILING_STD = 0.0471
