@@ -41,7 +41,7 @@ def test_additive_geometry_bias_is_zero_initialised():
     _, coord, length, _ = _inputs()
     out = gb(coord, length)
     assert out.shape == (coord.shape[0], N_HEADS, coord.shape[1], coord.shape[1])
-    assert float(out.abs().max()) == 0.0
+    assert float(out.detach().abs().max()) == 0.0
 
 
 def test_A1_forward_is_numerically_identical_to_B2_at_initialisation():

@@ -123,7 +123,8 @@ def test_torch_tensors_flow_through_the_identical_code_path():
 def test_torch_descriptor_is_differentiable_wrt_the_boxes():
     torch = pytest.importorskip("torch")
     coord, length = _random_boxes(5, seed=10)
-    c = torch.as_tensor(coord, dtype=torch.float64, requires_grad=True)
-    l = torch.as_tensor(length, dtype=torch.float64, requires_grad=True)
+    # torch.as_tensor() takes no requires_grad kwarg; torch.tensor() does (it always copies).
+    c = torch.tensor(coord, dtype=torch.float64, requires_grad=True)
+    l = torch.tensor(length, dtype=torch.float64, requires_grad=True)
     relative_geometry_batch(c, l).sum().backward()
     assert torch.isfinite(c.grad).all() and torch.isfinite(l.grad).all()

@@ -83,12 +83,24 @@ else:
             self.features = net.features
             self.pool = nn.AdaptiveAvgPool3d(1)
             self.dropout = nn.Dropout(dropout)
-            self.fc = nn.Linear(self._feature_channels(), d_app)
+            self.n_features = self._probe_feature_channels()
+            self.fc = nn.Linear(self.n_features, d_app)
             self.d_app = d_app
 
-        @staticmethod
-        def _feature_channels() -> int:
-            return 1024  # DenseNet-121's final feature width
+        def _probe_feature_channels(self) -> int:
+            """Measure the backbone's output width with one dry forward.
+
+            DenseNet-121 is 1024-wide, but measuring beats hard-coding: a MONAI version bump
+            or a different ``block_config`` would otherwise surface as a shape error on the
+            first training batch, after the crop cache and a dataloader are already up."""
+            was_training = self.training
+            self.features.eval()
+            with torch.no_grad():
+                probe = torch.zeros(1, 1, int(C.RESC_CROP_OUT), int(C.RESC_CROP_OUT),
+                                    int(C.RESC_CROP_OUT))
+                n = int(self.features(probe).shape[1])
+            self.features.train(was_training)
+            return n
 
         def forward(self, x):
             h = torch.relu(self.features(x))
