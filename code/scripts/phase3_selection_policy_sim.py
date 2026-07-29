@@ -104,6 +104,24 @@ def pick_recall_floor(info: dict, floor: float, pool_budget=None, **_) -> int:
     return int(max(cands, key=lambda e: (_f(cands[e].get("ceiling"), -1), _f(cands[e]["cpm"]), -e)))
 
 
+def pick_recall_floor_guarded(info: dict, floor: float, guard_delta: float, pool_budget=None, **_) -> int:
+    """[recommended variant] ceiling >= floor AND cpm >= (max CPM - guard_delta) AND pool <= budget -> max CPM.
+
+    The CPM guard blocks *degenerate* early checkpoints that clear the recall floor only because they are
+    barely converged (fold4's epoch 5 at CPM 0.14 in the first sim). Fallback when nothing qualifies: the
+    CURRENT production rule — so the policy can never do worse than today's pick on a run it cannot improve.
+    """
+    all_elig = _eligible(info)
+    if all_elig:
+        max_cpm = max(_f(r["cpm"]) for r in all_elig.values())     # guard vs the UNCONSTRAINED max
+        cands = _eligible(info, pool_budget)
+        ok = {e: r for e, r in cands.items()
+              if _f(r.get("ceiling"), -1) >= floor and _f(r["cpm"]) >= max_cpm - guard_delta}
+        if ok:
+            return int(max(ok, key=lambda e: (_f(ok[e]["cpm"]), -e)))
+    return pick_current(info)                                      # documented fallback
+
+
 def pick_a2_shaped(info: dict, pool_budget=None, frac: float = 0.98, **_) -> int:
     cands = _eligible(info, pool_budget) or _eligible(info)
     max_ceil = max((_f(r.get("ceiling"), -1) for r in cands.values()), default=-1)
@@ -139,6 +157,10 @@ def main() -> int:
     ap.add_argument("--pool-budget", type=float, default=float(C.RESCORER_POOL_BUDGET),
                     help=f"max cands/vol a policy may accept (default RESCORER_POOL_BUDGET={C.RESCORER_POOL_BUDGET})")
     ap.add_argument("--floors", default="0.80,0.85,0.90", help="comma-separated recall floors to simulate")
+    ap.add_argument("--guard-floor", type=float, default=0.80,
+                    help="recall floor for the GUARDED variant (default 0.80 — the seed-safe side of the cliff)")
+    ap.add_argument("--guards", default="0.10,0.15,0.20",
+                    help="comma-separated CPM guard deltas: require cpm >= max_cpm - delta (blocks degenerate epochs)")
     ap.add_argument("--out-json", default=None, help="optional path to write the simulation summary")
     args = ap.parse_args()
 
@@ -170,6 +192,9 @@ def main() -> int:
     policies = [("current", pick_current, {}), ("cpm_argmax", pick_cpm_argmax, {})]
     policies += [(f"recall_floor@{f:g}", pick_recall_floor, {"floor": f, "pool_budget": args.pool_budget})
                  for f in floors]
+    policies += [(f"guarded@{args.guard_floor:g}/d{g:g}", pick_recall_floor_guarded,
+                  {"floor": args.guard_floor, "guard_delta": g, "pool_budget": args.pool_budget})
+                 for g in [float(x) for x in args.guards.split(",") if x.strip()]]
     policies += [("a2_shaped", pick_a2_shaped, {"pool_budget": args.pool_budget}),
                  ("recall_primary", pick_recall_primary, {"pool_budget": args.pool_budget})]
 
