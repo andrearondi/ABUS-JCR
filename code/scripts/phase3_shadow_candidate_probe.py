@@ -270,22 +270,58 @@ def report(per_vol: list, beam_axis: int, roles: dict, tag: str) -> dict:
     fp_all = {k: np.concatenate(v) if v else np.zeros(0) for k, v in fp_all.items()}
 
     print("\n# 4. PER-CANDIDATE SHADOW FEATURES (TP vs FP; the block a rescorer would consume)\n")
-    print("  |delta| >= 0.15 is the same 'worth a feature block' bar the Axis-A test uses.\n")
-    print(f"  {'feature':>14} {'TP_med':>9} {'FP_med':>9} {'cliffs_d':>9} {'n_TP':>7} {'n_FP':>7}")
+    print("  |delta| >= 0.15 is the same 'worth a feature block' bar the Axis-A test uses.")
+    print("  POOLED delta counts every candidate once. It OVERSTATES its own precision: the")
+    print("  split is single-lesion dominant, so a volume's ~20 TPs are ~20 overlapping tubes")
+    print("  on ONE lesion, not 20 independent observations. One unusual lesion with many")
+    print("  tubes can carry the pooled number on its own.")
+    print("  PER-VOLUME delta is computed inside each volume and then aggregated, so every")
+    print("  volume counts once. 'sign' = the fraction of volumes agreeing with the pooled")
+    print("  direction. Trust a feature when the two deltas agree AND sign is near 1.0.\n")
+    print(f"  {'feature':>14} {'TP_med':>9} {'FP_med':>9} {'pooled_d':>9} {'perVol_d':>9} "
+          f"{'sign':>6} {'n_TP':>7} {'n_FP':>7} {'nVol':>5}")
     feat_rows = []
     for k in feat_names:
         d = SH.cliffs_delta(tp_all[k], fp_all[k])
+        per_v = []
+        for v in per_vol:
+            lab = np.asarray(v["labels"])
+            arr = np.asarray(v["features"][k], float)
+            a, b = arr[lab == "pos"], arr[lab == "neg"]
+            if len(a) and len(b):
+                dv = SH.cliffs_delta(a, b)
+                if np.isfinite(dv):
+                    per_v.append(dv)
+        d_v = float(np.median(per_v)) if per_v else float("nan")
+        if per_v and np.isfinite(d) and d != 0:
+            sign = float(np.mean([np.sign(x) == np.sign(d) for x in per_v]))
+        else:
+            sign = float("nan")
         print(f"  {k:>14} {np.nanmedian(tp_all[k]) if len(tp_all[k]) else float('nan'):>9.3f} "
               f"{np.nanmedian(fp_all[k]) if len(fp_all[k]) else float('nan'):>9.3f} "
-              f"{d:>9.3f} {len(tp_all[k]):>7} {len(fp_all[k]):>7}")
-        feat_rows.append({"feature": k, "cliffs_delta": d,
+              f"{d:>9.3f} {d_v:>9.3f} {sign:>6.2f} {len(tp_all[k]):>7} {len(fp_all[k]):>7} "
+              f"{len(per_v):>5}")
+        feat_rows.append({"feature": k, "cliffs_delta": d, "cliffs_delta_per_volume": d_v,
+                          "sign_agreement": sign, "n_volumes": len(per_v),
                           "tp_median": float(np.nanmedian(tp_all[k])) if len(tp_all[k]) else None,
                           "fp_median": float(np.nanmedian(fp_all[k])) if len(fp_all[k]) else None})
-    best = max((r for r in feat_rows if np.isfinite(r["cliffs_delta"])),
-               key=lambda r: abs(r["cliffs_delta"]), default=None)
-    if best:
-        verdict = ("CARRIES SIGNAL" if abs(best["cliffs_delta"]) >= 0.15 else "NO USABLE SIGNAL")
-        print(f"\n  -> strongest: {best['feature']} |delta|={abs(best['cliffs_delta']):.3f}  => {verdict}")
+
+    def _score(r):
+        """Rank on the WEAKER of the two deltas — a feature only counts if it survives both."""
+        a, b = abs(r["cliffs_delta"]), abs(r["cliffs_delta_per_volume"])
+        if not np.isfinite(a):
+            return -1.0
+        return min(a, b) if np.isfinite(b) else a
+
+    best = max(feat_rows, key=_score, default=None)
+    if best and _score(best) >= 0:
+        s = _score(best)
+        consistent = np.isfinite(best["sign_agreement"]) and best["sign_agreement"] >= 0.75
+        verdict = ("CARRIES SIGNAL" if s >= 0.15 and consistent else
+                   "NOT CONSISTENT ACROSS VOLUMES" if s >= 0.15 else "NO USABLE SIGNAL")
+        print(f"\n  -> strongest (on the weaker of the two deltas): {best['feature']} "
+              f"pooled={abs(best['cliffs_delta']):.3f} perVol={abs(best['cliffs_delta_per_volume']):.3f} "
+              f"sign={best['sign_agreement']:.2f}  => {verdict}")
 
     # --- 3 plane correspondence ---
     print("\n# 3. PLANE CORRESPONDENCE — does candidate density track shadow density?\n")
