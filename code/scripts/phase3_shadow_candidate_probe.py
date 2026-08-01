@@ -57,6 +57,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.patches as mpatches  # noqa: E402
 
 from abus_jcr import conventions as C  # noqa: E402
 from abus_jcr import cache as K  # noqa: E402
@@ -229,6 +230,7 @@ def analyse_volume(croot: Path, pid: int, g: pd.DataFrame, beam_axis: int,
                               "shadow": np.asarray(marg[a]["shadow"]).tolist()}
                           for a in (0, 1, 2)},
             "centroids": cen.tolist(), "is_tp": is_tp.tolist(), "is_fp": is_fp.tolist(),
+            "boxes": _iso_boxes(g).tolist(), "scores": g["score_max"].tolist(),
             "plane_corr": {k: v for k, v in plane_corr.items()},
             "slice_concentration": conc, "ray": ray, "knn_anisotropy": aniso_dir,
             "periodicity": period,
@@ -525,33 +527,114 @@ def figures(per_vol: list, beam_axis: int, roles: dict, out_dir: Path, tag: str)
     return written
 
 
-def exemplar_figure(vrec: dict, field: dict, beam_axis: int, roles: dict,
-                    out_dir: Path, tag: str) -> Path:
-    """One volume: shadow map vs candidate centroids, in all three planes side by side."""
-    cen = np.asarray(vrec["centroids"], float)
-    is_tp = np.asarray(vrec["is_tp"], bool)
-    is_fp = np.asarray(vrec["is_fp"], bool)
-    shadow = np.asarray(field["shadow"], float)
+def iso_mm_per_voxel(beam_axis: int, roles: dict) -> np.ndarray:
+    """Physical size of one ISO-cache voxel along each storage axis, in millimetres.
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5.4))
-    for i, pair in enumerate([(0, 1), (0, 2), (1, 2)]):
+    Needed because the cache is **not** isotropic. ``preprocess`` resampled axis ``a`` by
+    ``SPACING_STORAGE_MM[a] / ISO_SPACING_MM`` using the *declared* spacing map, so the
+    real size of a cache voxel is ``true_spacing[a] * ISO_SPACING_MM /
+    SPACING_STORAGE_MM[a]``. With the deployed constants that is roughly
+    (1.10, 0.15, 0.40) mm — a 7.5x in-plane distortion. Drawing any plane at
+    ``aspect="equal"`` in voxels, or at ``aspect="auto"``, therefore shows anatomically
+    false proportions.
+
+    ``true_spacing`` is assigned by MEASURED ROLE, not by stored index: the official spec
+    gives 0.073 mm along depth, 0.200 mm laterally and 0.475674 mm between sweep frames,
+    and this run measured which storage axis plays which role. See results/AXIS_AUDIT.md.
+    """
+    by_role = {"depth/beam": 0.073, "lateral": 0.200, "sweep/elevational": 0.475674}
+    mm = np.ones(3, dtype=float)
+    for a in (0, 1, 2):
+        true_sp = by_role.get(roles.get(a, ""), C.SPACING_STORAGE_MM[a])
+        mm[a] = true_sp * C.ISO_SPACING_MM / C.SPACING_STORAGE_MM[a]
+    return mm
+
+
+def exemplar_figure(vrec: dict, field: dict, beam_axis: int, roles: dict,
+                    out_dir: Path, tag: str, volume=None, mask=None,
+                    top_k: int = 10) -> Path:
+    """One volume, three planes: real B-mode anatomy with the shadow field overlaid.
+
+    Deliberately built like the [P3U2.PD] top-k box figure rather than as a heat map,
+    because a heat map of *projected* shadow mass turned out to be close to unreadable: it
+    averages along the dropped axis, so it corresponds to no anatomical image, shows no
+    tissue, and reduces candidates to bare centroids. Here each panel is an actual iso
+    **slice** through the lesion, the shadow field for that same slice is laid over it in
+    red, and candidates are drawn as **boxes** so their extent is visible.
+
+    Panels are drawn at their true physical aspect (see :func:`iso_mm_per_voxel`), so the
+    three planes have different shapes — as they must: this volume is about
+    173 x 50 x 166 mm, and the depth axis is by far the shortest.
+    """
+    cen = np.asarray(vrec["centroids"], float)
+    boxes = np.asarray(vrec["boxes"], float)
+    scores = np.asarray(vrec["scores"], float)
+    is_tp = np.asarray(vrec["is_tp"], bool)
+    shadow = np.asarray(field["shadow"], bool)
+    vol = None if volume is None else np.asarray(volume, dtype=np.float32)
+    msk = None if mask is None else np.asarray(mask) > 0
+    mm = iso_mm_per_voxel(beam_axis, roles)
+
+    # centre the slices on the GT lesion when there is one, else on the candidate cloud
+    if msk is not None and msk.any():
+        w = np.where(msk)
+        centre = [int(np.mean(w[a])) for a in (0, 1, 2)]
+    elif len(cen):
+        centre = [int(np.median(cen[:, a])) for a in (0, 1, 2)]
+    else:
+        centre = [s // 2 for s in shadow.shape]
+
+    order = np.argsort(-scores)[:top_k]
+    # panel widths in MILLIMETRES, so the three planes share one physical scale bar and
+    # the true 173 x 50 x 166 mm proportions are visible at a glance
+    planes = [(0, 1), (0, 2), (1, 2)]
+    widths = [shadow.shape[p[0]] * mm[p[0]] for p in planes]
+    fig, axes = plt.subplots(1, 3, figsize=(17, 6.5),
+                             gridspec_kw={"width_ratios": widths})
+    for i, pair in enumerate(planes):
         drop = [a for a in (0, 1, 2) if a not in pair][0]
-        smap = shadow.mean(axis=drop)
+        c = int(np.clip(centre[drop], 0, shadow.shape[drop] - 1))
+        sh2 = np.take(shadow, c, axis=drop)
         ax = axes[i]
-        ax.imshow(smap.T, origin="upper", aspect="auto", cmap="magma",
-                  extent=[0, smap.shape[0], smap.shape[1], 0])
-        ax.scatter(cen[is_fp][:, pair[0]], cen[is_fp][:, pair[1]], s=14, c="cyan",
-                   marker=".", alpha=0.75, label=f"FP ({int(is_fp.sum())})")
-        ax.scatter(cen[is_tp][:, pair[0]], cen[is_tp][:, pair[1]], s=55, facecolors="none",
-                   edgecolors="lime", linewidths=1.4, label=f"TP ({int(is_tp.sum())})")
-        ax.set_title(f"{_plane_name(pair, beam_axis, roles)}\n"
+        ext = [0, sh2.shape[0], sh2.shape[1], 0]
+        aspect = mm[pair[1]] / mm[pair[0]]        # true anatomical proportions
+
+        if vol is not None:
+            bg = np.take(vol, c, axis=drop)
+            ax.imshow(bg.T, origin="upper", aspect=aspect, cmap="gray", extent=ext,
+                      vmin=float(np.percentile(bg, 1)), vmax=float(np.percentile(bg, 99)))
+        # shadow for THIS slice, as a translucent red wash
+        overlay = np.zeros(sh2.shape + (4,), dtype=float)
+        overlay[..., 0] = 1.0
+        overlay[..., 3] = np.where(sh2, 0.45, 0.0)
+        ax.imshow(np.transpose(overlay, (1, 0, 2)), origin="upper", aspect=aspect, extent=ext)
+
+        if msk is not None and msk.any():
+            m2 = np.take(msk, c, axis=drop).astype(float)
+            if m2.any():
+                ax.contour(np.linspace(0, m2.shape[0], m2.shape[0]),
+                           np.linspace(0, m2.shape[1], m2.shape[1]),
+                           m2.T, levels=[0.5], colors="cyan", linewidths=1.6)
+
+        for n in order:
+            lo0, hi0 = boxes[n][pair[0]], boxes[n][pair[0] + 3]
+            lo1, hi1 = boxes[n][pair[1]], boxes[n][pair[1] + 3]
+            col = "yellow" if is_tp[n] else "red"
+            ax.add_patch(mpatches.Rectangle((lo0, lo1), hi0 - lo0, hi1 - lo1, fill=False,
+                                            edgecolor=col, lw=1.3, alpha=0.9))
+        ax.set_xlim(0, sh2.shape[0]); ax.set_ylim(sh2.shape[1], 0)
+        ax.set_title(f"{_plane_name(pair, beam_axis, roles)}   slice @ d{drop}={c}\n"
                      f"d{pair[0]} ({roles.get(pair[0],'?')}) x d{pair[1]} ({roles.get(pair[1],'?')})",
                      fontsize=10)
-        ax.set_xlabel(f"d{pair[0]}"); ax.set_ylabel(f"d{pair[1]}")
-        ax.legend(fontsize=7, loc="upper right")
-    fig.suptitle(f"{tag} vol {vrec['public_id']} — shadow mass (heat) vs candidate centroids",
-                 fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.92])
+        ax.set_xlabel(f"d{pair[0]} (iso vox, {mm[pair[0]]:.2f} mm each)", fontsize=8)
+        ax.set_ylabel(f"d{pair[1]} (iso vox, {mm[pair[1]]:.2f} mm each)", fontsize=8)
+
+    fig.suptitle(f"{tag} vol {vrec['public_id']} — shadow field (red) on the B-mode slice; "
+                 f"top-{top_k} candidates as boxes (TP=yellow, FP=red), GT mask=cyan\n"
+                 f"panels drawn at TRUE physical aspect; iso voxel = "
+                 f"({mm[0]:.2f}, {mm[1]:.2f}, {mm[2]:.2f}) mm — the cache is NOT isotropic",
+                 fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     p = out_dir / f"shadow_exemplar_{tag}_vol{vrec['public_id']}.png"
     fig.savefig(p, dpi=110); plt.close(fig)
     return p
@@ -569,6 +652,8 @@ def main() -> int:
                          "unit stays one rescorer SET per volume — Inv. 7)")
     ap.add_argument("--max-volumes", type=int, default=0, help="0 = all")
     ap.add_argument("--n-exemplars", type=int, default=3)
+    ap.add_argument("--exemplar-top-k", type=int, default=10,
+                    help="how many candidates (by score_max) to draw as boxes on the exemplar")
     # shadow-field knobs
     ap.add_argument("--dark-z", type=float, default=-0.6)
     ap.add_argument("--tail-z", type=float, default=-0.4)
@@ -654,16 +739,21 @@ def main() -> int:
         order = sorted(per_vol, key=lambda v: -v["n_fp"])[: args.n_exemplars]
         for v in order:
             f = fields.get(v["public_id"])
-            if f is None:
-                try:
-                    vol = np.asarray(K.open_vol(croot, v["public_id"]))
+            try:
+                vol = np.asarray(K.open_vol(croot, v["public_id"]))
+                if f is None:
                     f = SH.shadow_field(vol, beam_axis=beam, dark_z=args.dark_z,
                                         tail_z=args.tail_z, far_frac=args.far_frac,
                                         near_ok_z=args.near_ok_z, sub=args.sub)
-                except Exception as e:                            # noqa: BLE001
-                    print(f"  (exemplar vol {v['public_id']} skipped: {type(e).__name__}: {e})")
-                    continue
-            figs.append(exemplar_figure(v, f, beam, roles, out_dir, split))
+            except Exception as e:                                # noqa: BLE001
+                print(f"  (exemplar vol {v['public_id']} skipped: {type(e).__name__}: {e})")
+                continue
+            try:
+                msk = np.asarray(K.open_mask(croot, v["public_id"]))
+            except Exception:                                     # noqa: BLE001
+                msk = None                                        # GT unavailable -> no contour
+            figs.append(exemplar_figure(v, f, beam, roles, out_dir, split,
+                                        volume=vol, mask=msk, top_k=args.exemplar_top_k))
         print(f"\n[{split}] figures: {[p.name for p in figs]}")
 
         drop_keys = {"features", "labels", "centroids", "is_tp", "is_fp", "marginals", "_vol_shape"}
