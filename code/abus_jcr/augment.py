@@ -36,8 +36,18 @@ TRAIN_AUGMENT = {
     "mosaic": False,                 # Ultralytics default — must stay off (Phase 6)
     "mixup": False,
     # allowed
-    "horizontal_flip": True,         # d1 = lateral, ~L-R symmetry
+    "horizontal_flip": True,         # the L-R-symmetry flip; see flip_stack_axis for WHICH axis
     "horizontal_flip_p": 0.5,
+    # [2026-08-02] WHICH in-plane axis of the (C, d0, d1) stack the allowed flip acts on.
+    #   1 = d1  <- DEPLOYED DEFAULT. Every recorded detector and the rescorer encoder trained here.
+    #   0 = d0
+    # The names above ("horizontal" / "vertical") describe IMAGE geometry and are attached to the
+    # WRONG physical axis: d1 is the depth/beam axis and d0 is lateral (measured on 129/130 volumes
+    # — results/AXIS_CHECK.md). So the deployed default flips DEPTH, which Inv. 13 forbids, while
+    # the genuinely symmetry-preserving lateral flip (d0) is the one switched off.
+    # The default is left at 1 so this module stays byte-identical to what produced every recorded
+    # number; setting 0 is the corrected policy, exercised by the A/B in RB_AUG_FLIP_AB.md.
+    "flip_stack_axis": 1,
     "intensity_jitter": True,        # grayscale brightness/contrast
     "brightness_contrast_limit": 0.2,
     "gaussian_blur": True,
@@ -61,14 +71,21 @@ TRAIN_AUGMENT = {
 }
 
 
-def hflip_stack(stack: np.ndarray) -> np.ndarray:
-    """Horizontal (lateral ``d1``) flip applied identically across all C channels.
+def hflip_stack(stack: np.ndarray, axis: int = None) -> np.ndarray:
+    """Mirror a ``(C, d0, d1)`` stack along one in-plane axis, identically across channels.
 
-    ``stack`` is ``(C, d0, d1)``; the flip is along the last axis (lateral), never
-    ``d0`` (depth). Applied to every channel with the same operation so the 2.5D
-    channels stay synchronised (Inv. 13).
+    ``axis`` is the STACK axis to mirror: 1 = ``d1``, 0 = ``d0``. It defaults to
+    ``TRAIN_AUGMENT["flip_stack_axis"]`` (currently 1 — the deployed behaviour). Whichever
+    is chosen, the same operation is applied to every channel so the 2.5D channels stay
+    synchronised (Inv. 13).
+
+    Which of the two is physically legitimate depends on the axis roles, and those were
+    recorded wrongly — see ``flip_stack_axis`` above and ``results/AXIS_CHECK.md``.
     """
     stack = np.asarray(stack)
     if stack.ndim != 3:
         raise ValueError(f"expected (C, d0, d1), got shape {stack.shape}")
-    return stack[:, :, ::-1].copy()
+    a = TRAIN_AUGMENT["flip_stack_axis"] if axis is None else int(axis)
+    if a not in (0, 1):
+        raise ValueError(f"flip axis must be 0 (d0) or 1 (d1), got {a!r}")
+    return (stack[:, :, ::-1] if a == 1 else stack[:, ::-1, :]).copy()

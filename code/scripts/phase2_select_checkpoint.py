@@ -45,8 +45,15 @@ from _phase3_common import (add_phase3_paths, assert_device, cache_root, load_ma
 
 def _run_val_ids_and_gt(args, manifest, run: str):
     """(val_ids, gt_split_name) for a run: fold -> held-out Train fold; full -> Validation."""
+    # A run may carry an experimental suffix (`..._<suffix>`, e.g. the RB_AUG_FLIP_AB.md arm).
+    # The val set depends only on the regime, so strip the suffix before parsing the fold id —
+    # `int("0_latflip")` would otherwise raise and make a legitimate arm unrunnable.
+    import re as _re
     if run.startswith("retinanet_fold"):
-        f = int(run.split("fold")[-1])
+        m = _re.match(r"retinanet_fold(\d+)", run)
+        if m is None:
+            raise SystemExit(f"cannot parse fold id from run {run!r}")
+        f = int(m.group(1))
         ids = sorted(int(v) for v in manifest[(manifest["split"] == "train")
                                               & (manifest["fold"] == f)]["volume_id"])
         return ids, "train"

@@ -112,6 +112,20 @@ def _hflip_boxes(boxes: np.ndarray, w: int) -> np.ndarray:
     return out
 
 
+def _vflip_boxes(boxes: np.ndarray, h: int) -> np.ndarray:
+    """Mirror boxes along the ROW axis (``d0``) — the partner of :func:`_hflip_boxes`.
+
+    Boxes are ``(x1, y1, x2, y2)`` = ``(d1, d0, d1, d0)``, so this reflects the y pair
+    about ``h``. Used when ``policy["flip_stack_axis"] == 0``.
+    """
+    if len(boxes) == 0:
+        return boxes
+    out = boxes.copy()
+    out[:, 1] = h - boxes[:, 3]  # y1' = H - y2
+    out[:, 3] = h - boxes[:, 1]  # y2' = H - y1
+    return out
+
+
 def _shift_boxes(boxes: np.ndarray, dy: int, dx: int, h: int, w: int) -> np.ndarray:
     """Shift half-open boxes by ``(dx, dy)``, clip to the frame, drop the vanished."""
     if len(boxes) == 0:
@@ -151,11 +165,22 @@ def apply_train_augment(
         if on_op is not None:
             on_op(name, params)
 
-    # --- spatial: horizontal flip (lateral d1), shared across channels ---
+    # --- spatial: mirror flip, shared across channels ---
+    # `flip_stack_axis` selects WHICH in-plane axis is mirrored: 1 = d1 (deployed default),
+    # 0 = d0. See augment.TRAIN_AUGMENT — the axis roles were recorded inverted, so the
+    # deployed default mirrors depth. The op name emitted stays "hflip" either way so the
+    # Inv.-13 consistency test keeps working unchanged.
     if float(policy.get("horizontal_flip_p", 0.0)) > 0.0 and rng.random() < policy["horizontal_flip_p"]:
-        stack = stack[:, :, ::-1].copy()          # all channels, same op
-        boxes = _hflip_boxes(boxes, w)
-        emit("hflip", {})
+        flip_axis = int(policy.get("flip_stack_axis", 1))
+        if flip_axis not in (0, 1):
+            raise ValueError(f"flip_stack_axis must be 0 (d0) or 1 (d1), got {flip_axis!r}")
+        if flip_axis == 1:
+            stack = stack[:, :, ::-1].copy()      # all channels, same op
+            boxes = _hflip_boxes(boxes, w)
+        else:
+            stack = stack[:, ::-1, :].copy()
+            boxes = _vflip_boxes(boxes, h)
+        emit("hflip", {"stack_axis": flip_axis})
 
     # --- spatial: small integer translation, one (dy,dx) shared across channels ---
     if policy.get("small_translation", False):

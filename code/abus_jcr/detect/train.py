@@ -22,7 +22,7 @@ import json
 import math
 import random
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -207,8 +207,15 @@ def train_detector(
     batch_size: int = C.DET_BATCH_SIZE,
     num_workers: int = 8,
     device: str = "cuda",
+    augment_policy: Optional[Dict] = None,
+    run_suffix: str = "",
 ) -> Dict:
     """Train one detector on a fixed annealed schedule; save EVERY epoch + a jsonl log.
+
+    ``augment_policy`` overrides ``augment.TRAIN_AUGMENT`` for the TRAIN dataset only (val is
+    never augmented). ``run_suffix`` appends to the run name, so an experimental arm writes to
+    ``checkpoints/<run>_<suffix>/`` and can never overwrite a deployed checkpoint. Both default
+    to the deployed behaviour, so omitting them reproduces the recorded runs exactly.
 
     [P3-UPDATE D2/A1] No in-loop checkpoint selection or early stopping — every epoch is
     written to ``checkpoints/<run>/epoch{e:02d}.pt`` and the deployed ``<run>.pt`` is chosen
@@ -221,6 +228,8 @@ def train_detector(
     seed_everything(seed)
 
     run = f"retinanet_fold{fold_or_seed}" if regime == "fold" else f"retinanet_full_seed{fold_or_seed}"
+    if run_suffix:
+        run = f"{run}_{run_suffix}"
     out_root = Path(out_root)
     epochs_dir = out_root / "checkpoints" / run   # per-epoch checkpoints (post-hoc selection reads these)
     epochs_dir.mkdir(parents=True, exist_ok=True)
@@ -230,7 +239,9 @@ def train_detector(
     tr_ids = train_volume_ids(manifest, regime, fold_or_seed)
     va_ids = val_volume_ids(manifest)
 
-    train_ds = SliceDetectionDataset(cache_root, slice_boxes_train, tr_ids, train=True, seed=seed)
+    ds_kw = {} if augment_policy is None else {"policy": augment_policy}
+    train_ds = SliceDetectionDataset(cache_root, slice_boxes_train, tr_ids, train=True, seed=seed,
+                                     **ds_kw)
     val_ds = SliceDetectionDataset(cache_root, slice_boxes_val, va_ids, train=False, seed=seed)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False,
                             num_workers=num_workers, collate_fn=_collate)
