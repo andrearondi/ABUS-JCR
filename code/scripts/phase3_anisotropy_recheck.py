@@ -78,6 +78,36 @@ def analyse(pool: pd.DataFrame, true_spacing, iso_mm, split: str) -> list:
     return rows
 
 
+def _gt_shape_table(args, splits, true_spacing, df: pd.DataFrame) -> None:
+    """Same three ratios on the OFFICIAL GT boxes — the shape a real lesion actually has.
+
+    Candidates come out ~2 : 1 : 1 (lateral : depth : sweep) in every detector. That is
+    either what lesions look like, or something the 2-D detector + sweep linker imposes.
+    The GT boxes settle it, and they cost nothing: ``bbx_labels.csv`` carries the same
+    official schema the candidate record uses, so the identical conversion applies.
+    """
+    from _phase3_common import load_official_gt
+    print("\n# C2. THE SAME RATIOS ON THE OFFICIAL GT BOXES — do real lesions have this shape?\n")
+    print(f"  {'split':>6} {'n GT':>6} " + " ".join(f"{n:>12}" for n in A.RATIO_NAMES)
+          + "   <- median (1.000 = cubic)")
+    for sp in splits:
+        try:
+            gt = load_official_gt(args, sp)
+        except Exception as e:
+            print(f"  {sp:>6}  (GT unavailable: {type(e).__name__}) — skipped")
+            continue
+        e_mm = A.extents_mm(gt, true_spacing)["native_mm"]
+        r = A.elongation_ratios(e_mm)
+        print(f"  {sp:>6} {len(gt):>6} "
+              + " ".join(f"{np.nanmedian(r[n]):>12.2f}" for n in A.RATIO_NAMES))
+    cand = {n: df[df["ratio"] == n][["tp_med", "fp_med"]].to_numpy().mean() for n in A.RATIO_NAMES}
+    print(f"  {'cands':>6} {'':>6} " + " ".join(f"{cand[n]:>12.2f}" for n in A.RATIO_NAMES)
+          + "   <- mean of the TP/FP medians above")
+    print("\n  If GT is ~1:1 in the coronal plane (elong_d0 ~ elong_d2) but candidates are")
+    print("  lateral-heavy, the extra elongation is imposed by the 2-D detector + sweep")
+    print("  linker, not by the anatomy — a localisation-quality issue, not a shape prior.")
+
+
 def _figure(splits, args, true_spacing, iso_mm, out_dir: Path):
     """One panel per elongation ratio: TP vs FP distributions with the CUBIC line marked.
 
@@ -209,6 +239,8 @@ def main() -> int:
             r = g[g["ratio"] == n]
             cells.append(f"{r['tp_med'].iloc[0]:.2f} / {r['fp_med'].iloc[0]:.2f}" if len(r) else "-")
         print(f"  {sp:>6} {det:>12} " + " ".join(f"{c:>22}" for c in cells))
+
+    _gt_shape_table(args, splits, true_spacing, df)
 
     print("\n# D. IS THERE A RAY-SHAPED POPULATION AT ALL?  (elong_d1 = depth / mean(lat, sweep))")
     print("     A posterior-shadow ray must be LONGER along the beam than across it, i.e. > 1.")

@@ -228,12 +228,18 @@ def _plot_volume(gvol: pd.DataFrame, gt, out_dir: Path, tag: str, want_html: boo
     written = []
     # static: 3 orthogonal 2D projections + 3D
     fig = plt.figure(figsize=(15, 4.2)); fig.suptitle(f"{tag}  (TP=○  FP=·  colour=score_max)")
-    # NOTE: this figure plots the record's OFFICIAL (ITK) coordinates, where coordX = storage d2
-    # (sweep), coordY = d1 (lateral), coordZ = d0 (depth) — see conventions.PERM_STORAGE_TO_ITK.
-    # Panels are named for the storage axes so they agree with the top-k box figure (AX_NAME).
-    projs = [("coronal: d2 sweep (X) × d1 lateral (Y)", x, y),
-             ("B-mode frame: d1 lateral (Y) × d0 depth (Z)", y, z),
-             ("depth × sweep: d2 (X) × d0 (Z)", x, z)]
+    # NOTE: this figure plots the record's OFFICIAL (ITK) coordinates, where coordX = storage d2,
+    # coordY = d1, coordZ = d0 — see conventions.PERM_STORAGE_TO_ITK. Panels are named for the
+    # storage axes so they agree with the top-k box figure (AX_NAME).
+    # [2026-08-02] Plane names CORRECTED: d1 is DEPTH/BEAM and d0 is LATERAL (measured on 129/130
+    # volumes — results/AXIS_CHECK.md). Every "coronal" title here used to be sagittal, and the
+    # panel called "depth x sweep" was the actual coronal C-plane. Aspect is left at matplotlib's
+    # default, so apparent elongation in these panels is NOT physical — the volume is
+    # 173 x 50 x 168 mm and depth gets stretched to fill the axes. Read shape off
+    # intensity_probe/fig4_correspondence_*.png, which is drawn at true scale.
+    projs = [("sagittal: d2 sweep (X) × d1 depth (Y)", x, y),
+             ("B-mode frame: d1 depth (Y) × d0 lateral (Z)", y, z),
+             ("coronal C-plane: d2 sweep (X) × d0 lateral (Z)", x, z)]
     for i, (name, u, v) in enumerate(projs, 1):
         ax = fig.add_subplot(1, 4, i)
         ax.scatter(u[~is_pos], v[~is_pos], c=s[~is_pos], cmap="viridis", marker=".", s=18, vmin=0, vmax=max(s.max(), 0.3))
@@ -248,8 +254,8 @@ def _plot_volume(gvol: pd.DataFrame, gt, out_dir: Path, tag: str, want_html: boo
         for (ex, ey, ez) in _box_edges(*gt):
             ax3.plot(ex, ey, ez, color="red", lw=0.8, alpha=0.7)
     ax3.set_title("3D (official ITK coords)", fontsize=9)
-    ax3.set_xlabel("X = d2 sweep", fontsize=7); ax3.set_ylabel("Y = d1 lateral", fontsize=7)
-    ax3.set_zlabel("Z = d0 depth", fontsize=7)
+    ax3.set_xlabel("X = d2 sweep", fontsize=7); ax3.set_ylabel("Y = d1 depth", fontsize=7)
+    ax3.set_zlabel("Z = d0 lateral", fontsize=7)
     p = out_dir / f"pool_diag_{tag}.png"; fig.savefig(p, dpi=110); plt.close(fig); written.append(p)
 
     # interactive plotly HTML (guarded)
@@ -322,16 +328,17 @@ def _load_iso_case(phase1_out, pid: int, want_volume: bool, official_gt=None):
 
 
 # ----------------------------------------------------------------------------- top-10 BOX viz (iso space)
-# Storage axes (conventions): d0 = depth/beam (skin at the top), d1 = lateral (in-plane),
-# d2 = elevational sweep (SLICE_AXIS). The panels are labelled with these STORAGE names, never
-# the official ITK (x,y,z) — where x=d2, y=d1, z=d0. Mixing the two is what made the old
-# "axial x-y / sagittal y-z / coronal x-z" titles disagree with the centroid figure's own axes.
-AX_NAME = {0: "d0 depth", 1: "d1 lateral", 2: "d2 sweep"}
+# Storage axes, MEASURED (results/AXIS_CHECK.md, 2026-08-02): d0 = LATERAL, d1 = DEPTH/BEAM
+# (skin at index 0), d2 = elevational sweep (SLICE_AXIS). The panels are labelled with these
+# STORAGE names, never the official ITK (x,y,z) — where x=d2, y=d1, z=d0. Mixing the two is
+# what made the old "axial x-y / sagittal y-z / coronal x-z" titles disagree with the centroid
+# figure's own axes. The d0/d1 ROLES were also inverted here until 2026-08-02.
+AX_NAME = {0: "d0 lateral", 1: "d1 depth", 2: "d2 sweep"}
 # (projection axis, human title). The two remaining axes, ASCENDING, are (vertical, horizontal)
 # — which is exactly the axis order numpy leaves after reducing `proj_axis`.
-PROJS = [(2, "B-mode frame  d1(lateral) x d0(depth)"),
-         (1, "depth x sweep  d2 x d0"),
-         (0, "coronal  d2(sweep) x d1(lateral)")]
+PROJS = [(2, "B-mode frame (axial)  d1(depth) x d0(lateral)"),
+         (1, "coronal C-plane  d2(sweep) x d0(lateral)"),
+         (0, "sagittal  d2(sweep) x d1(depth)")]
 
 
 def _plane_axes(proj_axis: int):

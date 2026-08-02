@@ -26,6 +26,19 @@ PERM_STORAGE_TO_ITK = (2, 1, 0)
 # The NRRD header carries an identity-matrix placeholder for spacing; it MUST
 # be ignored. Real spacing comes from the official challenge description.
 # Order is storage (d0, d1, d2) millimetres.
+#
+# *** THIS MAP IS KNOWN TO BE WRONG. IT IS RETAINED ON PURPOSE. ***  [2026-08-02]
+# Measured on 129/130 volumes (30 Val + 100 Train, disjoint), four independent lines:
+#     TRUE map = (0.200, 0.073, 0.475674)  ->  d0 = LATERAL, d1 = DEPTH/BEAM, d2 = sweep
+# i.e. the two IN-PLANE axes are swapped below. d2 = sweep is correct, so SLICE_AXIS = 2
+# and Inv. 1 stand. Evidence + reproduction: results/AXIS_CHECK.md, and
+# results/RESULTS_INTENSITY_PROBE.md [I.3].
+#
+# Why it is not simply corrected here: this constant feeds `preprocess_hash`, so changing
+# it invalidates the Phase-1 iso cache and every artefact built on it (all 8 detectors, both
+# candidate pools, Phases 3-4). That is a costed decision, not a typo fix — see AXIS_CHECK.md
+# §5-7. Reported CPM/FROC numbers are NOT affected: the metric runs in native ITK space and
+# IoU is invariant under a per-axis (diagonal) scaling.
 SPACING_STORAGE_MM = (0.073, 0.200, 0.475674)
 # => ITK order (x, y, z) = (0.475674, 0.200, 0.073)
 
@@ -57,13 +70,34 @@ LESION_MIN_VOXELS = 1000
 
 # --- Phase 1: isotropic cache + slice contract ------------------------------
 # The 2.5D detection frame (Inv. 1). Storage axis d2 = elevational/sweep is the
-# stack axis; each slice is the (d0, d1) B-mode frame. d0 = depth/beam (image
-# vertical, near-field at top) => NO vertical flip. d1 = lateral (image
-# horizontal) => horizontal flip allowed (Inv. 13). Confirmed on Val overlays.
+# stack axis; each slice is the (d0, d1) B-mode frame. That much is correct and
+# measured: d2 = sweep, so SLICE_AXIS = 2 and Inv. 1 stand.
+#
+# *** THE TWO IN-PLANE ROLES BELOW ARE INVERTED. MEASURED 2026-08-02. ***
+#   d0 is LATERAL  (image horizontal; a flip here is the legitimate L-R symmetry)
+#   d1 is DEPTH/BEAM (image vertical, near-field at top; a flip here is FORBIDDEN by Inv. 13)
+# The comment previously read "Confirmed on Val overlays" — no such confirmation exists
+# anywhere in this repo, and DATA_INFO.md recorded the axis as "provisionally axis 0 — to be
+# visually confirmed". The confirmation has now actually been done, on 129/130 volumes, and
+# it came out the other way: results/AXIS_CHECK.md.
+#
+# CONSEQUENCE, NOT YET ACTED ON: the deployed augmentation flips the axis these constants
+# call "lateral", which is really DEPTH — see augment.AUGMENT_POLICY and
+# rescore/crop_aug.FLIP_AXIS, both of which resolve to d1. Correcting the values here
+# silently changes both, so it is a retraining decision (AXIS_CHECK.md §5), not an edit.
 SLICE_AXIS = 2
-IN_PLANE_ROW_AXIS = 0  # d0 = depth/beam -> image "y"/row; NO vertical flip
-IN_PLANE_COL_AXIS = 1  # d1 = lateral    -> image "x"/col; horizontal flip OK
+IN_PLANE_ROW_AXIS = 0  # DECLARED "d0 = depth/beam"; MEASURED d0 = lateral
+IN_PLANE_COL_AXIS = 1  # DECLARED "d1 = lateral";    MEASURED d1 = depth/beam
 
+# *** THE CACHE IS NOT ACTUALLY ISOTROPIC. MEASURED 2026-08-02. *** `preprocess.zoom_factors`
+# scales axis a by SPACING_STORAGE_MM[a] / ISO_SPACING_MM, so with the wrong spacing map above
+# one cache voxel really spans ISO_SPACING_MM * true[a] / declared[a] mm:
+#       1.0959 x 0.1460 x 0.4000 mm   (d0 lateral, d1 depth, d2 sweep)
+# — an in-plane aspect error of (0.200/0.073)^2 ~ 7.5x. Inv. 6's "ONE coordinate space" holds
+# (it is single and consistent, applied identically to images, GT boxes and candidates in every
+# split, so IoU and the metric are unaffected); Inv. 6's "isotropic" does not. Any mm figure
+# derived from cache voxels below is wrong by these factors. See results/AXIS_CHECK.md §5.
+#
 # One isotropic space, cached once (Inv. 6). 0.4 mm target (chosen over the 0.5 mm
 # default after the [1.7] fidelity sweep: 0.5 mm left a small-lesion tail — 20/100
 # Train cases had a perfect-candidate round-trip IoU below 0.85, min 0.576, driven
@@ -299,7 +333,16 @@ RECON_IOU_WARN_FRAC = 0.85     # >= this fraction of Train cases must clear RECO
 RECON_IOU_SOFT      = 0.85     # typical-case target (Val median 0.942, Train median 0.936)
 # RECON hard floor is the existing RESAMPLE_IOU_FLOOR (0.50); any case below it = a linking/coord BUG.
 # --- Phase 3 (E): Phase-0b FP-structure probe ---
-FP_PROBE_ANISO_DEPTH_AXIS = 0  # d0 = depth/beam; anisotropy = extent_d0 / mean(extent_d1, extent_d2)
+# [2026-08-02] This constant is DECORATIVE — nothing reads it; `probe/fp_structure._anisotropy`,
+# `probe/pool_diag.augment` and `rescore/tokens._block_abs_geom` all hardcode d0. Its stated
+# meaning is also wrong: d0 is LATERAL, so every recorded `anisotropy` number measures LATERAL
+# elongation in a cache whose in-plane aspect is off by ~7.5x. The near-null effect sizes on
+# record (|delta| 0.014-0.358) are therefore about the wrong axis, and do NOT show that
+# depth-elongated candidates are absent. That was finally tested at [I.6b]: elongation about
+# the true beam axis separates TP/FP at |delta| ~0.27 (7/8 detectors), but NO candidate in
+# either pool exceeds 2x beam-elongation — there is no ray-shaped population. A physically
+# cubic candidate reads 0.195 on the deployed scale, not 1.0.
+FP_PROBE_ANISO_DEPTH_AXIS = 0  # d0 = LATERAL (declared "depth/beam"); see above. Unused.
 FP_PROBE_CLUSTER_RADIUS   = 10.0  # iso-voxel single-linkage radius for the FP-cluster count
 
 # The score-statistics vector column names are FROZEN (consumed verbatim by Phase 4).
