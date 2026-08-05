@@ -34,6 +34,10 @@ def main() -> int:
                         help="Train folds to validate over (OOF detectors); default 0 1")
     parser.add_argument("--op-score-thresh", type=float, default=C.LINK_OP_SCORE_THRESH,
                         help="provisional operating point for the param check")
+    parser.add_argument("--run-suffix", default="",
+                        help="read retinanet_fold<f>_<suffix>.pt instead of the deployed "
+                             "retinanet_fold<f>.pt, and tag the detection cache with it "
+                             "(RB_FOLD_FLIP.md). Empty = the deployed arm.")
     parser.add_argument("--no-cache", action="store_true",
                         help="do not read/write the per-volume detection cache (force recompute)")
     parser.add_argument("--device", default="cuda")
@@ -49,12 +53,13 @@ def main() -> int:
     # Run each OOF detector once per its fold's volumes; cache detections + gt + meta.
     det_by_vid, gt_by_vid, meta_by_vid = {}, {}, {}
     for f in args.folds:
-        ckpt = checkpoints_dir(args) / f"retinanet_fold{f}.pt"
+        sfx = f"_{args.run_suffix}" if args.run_suffix else ""
+        ckpt = checkpoints_dir(args) / f"retinanet_fold{f}{sfx}.pt"
         model, _ = load_checkpoint(ckpt)
         model.to(args.device)
         vids = sorted(int(v) for v in manifest[(manifest["split"] == "train")
                                                & (manifest["fold"] == f)]["volume_id"])
-        tag = f"fold{f}_op{args.op_score_thresh}"
+        tag = f"fold{f}{sfx}_op{args.op_score_thresh}"   # suffix MUST be here: else the arms share caches
         for k, vid in enumerate(vids, 1):
             det_by_vid[vid] = load_or_run_detections(
                 args.out_root, tag, vid, model, croot, args.op_score_thresh, args.device,

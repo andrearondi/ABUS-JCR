@@ -42,8 +42,14 @@ def _resolve_checkpoint(checkpoints_dir: Path, run: str, det: str, epoch_overrid
     return checkpoints_dir / f"{run}.pt"
 
 
+def run_suffix_tag(run_suffix: str = "") -> str:
+    """``""`` -> ``""``; ``"latflip"`` -> ``"_latflip"``. One place, so paths and cache tags agree."""
+    return f"_{run_suffix}" if run_suffix else ""
+
+
 def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir,
-                    epoch_overrides: Optional[dict] = None) -> List[dict]:
+                    epoch_overrides: Optional[dict] = None,
+                    run_suffix: str = "") -> List[dict]:
     """Torch-free routing: which checkpoint scores which volumes (Inv. 10, 14).
 
     Returns a list of ``{detector_of_origin, checkpoint, volume_ids, split, fold_of}``
@@ -57,9 +63,17 @@ def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir,
 
     ``epoch_overrides`` maps ``detector_of_origin`` -> epoch (e.g. ``{"fold2": 10}``) and points that
     detector at its saved per-epoch checkpoint instead of the deployed one (P3U3 contingency pool).
+
+    ``run_suffix`` selects an ALTERNATIVE detector generation trained under an experimental policy
+    (e.g. ``"latflip"`` -> ``retinanet_fold{f}_latflip.pt``; RB_FOLD_FLIP.md). The deployed
+    ``retinanet_fold{f}.pt`` / ``retinanet_full_seed{s}.pt`` files are never read when it is set.
+    ``detector_of_origin`` is deliberately left UNsuffixed so the two arms' records stay
+    column-comparable; the suffix reaches the detection cache tag separately (see
+    :func:`generate_split`), which is what keeps the two arms' caches from colliding.
     """
     checkpoints_dir = Path(checkpoints_dir)
     epoch_overrides = epoch_overrides or {}
+    sfx = run_suffix_tag(run_suffix)
     sel = manifest[manifest["split"] == split]
     jobs: List[dict] = []
     if split == "train":
@@ -68,7 +82,7 @@ def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir,
             det = f"fold{f}"
             jobs.append({
                 "detector_of_origin": det,
-                "checkpoint": _resolve_checkpoint(checkpoints_dir, f"retinanet_fold{f}", det, epoch_overrides),
+                "checkpoint": _resolve_checkpoint(checkpoints_dir, f"retinanet_fold{f}{sfx}", det, epoch_overrides),
                 "volume_ids": vids,
                 "split": split,
                 "fold_of": {v: f for v in vids},
@@ -79,7 +93,7 @@ def plan_generation(manifest: pd.DataFrame, split: str, checkpoints_dir,
             det = f"full_seed{s}"
             jobs.append({
                 "detector_of_origin": det,
-                "checkpoint": _resolve_checkpoint(checkpoints_dir, f"retinanet_full_seed{s}", det,
+                "checkpoint": _resolve_checkpoint(checkpoints_dir, f"retinanet_full_seed{s}{sfx}", det,
                                                   epoch_overrides),
                 "volume_ids": vids,
                 "split": split,
@@ -216,6 +230,7 @@ def generate_split(
     detections_cache_dir=None,
     progress: bool = False,
     epoch_overrides: Optional[dict] = None,
+    run_suffix: str = "",
 ) -> pd.DataFrame:
     """Generate the full candidate pool for ``split`` (Inv. 9, 10, 14).
 
@@ -225,7 +240,11 @@ def generate_split(
     ``public_id`` to fetch each volume's single scoring box. Returns a
     ``CANDIDATE_COLUMNS`` frame (Val = 3 seed pools stacked). When
     ``detections_cache_dir`` is set, per-volume detections are cached to disk keyed by
-    ``{detector_of_origin}_op{op}`` so a restart resumes without re-running inference.
+    ``{detector_of_origin}{run_suffix}_op{op}`` so a restart resumes without re-running inference.
+
+    **The suffix MUST be in the cache tag.** Without it an alternative detector generation
+    (``run_suffix="latflip"``) would silently read the DEPLOYED arm's cached detections and produce a
+    pool that looks new but is not. Pinned by ``tests/test_generate_run_suffix.py``.
     """
     from .. import cache as K
     from ..detect.retinanet import load_checkpoint as _load_ckpt
@@ -234,7 +253,7 @@ def generate_split(
     read_meta_fn = read_meta_fn or K.read_meta
 
     gt_idx = gt_gt_df.set_index("public_id")
-    jobs = plan_generation(manifest, split, checkpoints_dir, epoch_overrides)
+    jobs = plan_generation(manifest, split, checkpoints_dir, epoch_overrides, run_suffix)
 
     all_rows: List[pd.DataFrame] = []
     for job in jobs:
@@ -242,7 +261,8 @@ def generate_split(
         job_detect = detect_fn
         if detections_cache_dir is not None:
             job_detect = _cached_detect_fn(
-                detect_fn, detections_cache_dir, f"{job['detector_of_origin']}_op{op_score_thresh}")
+                detect_fn, detections_cache_dir,
+                f"{job['detector_of_origin']}{run_suffix_tag(run_suffix)}_op{op_score_thresh}")
         local_idx = 0
         for k, vid in enumerate(job["volume_ids"], 1):
             meta = read_meta_fn(cache_root, int(vid))

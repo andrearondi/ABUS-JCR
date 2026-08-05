@@ -294,6 +294,14 @@ LINK_DETECTIONS_PER_IMG = 500   # per-slice cap feeding the linker (> DET_DIAG 3
 LINK_OP_SCORE_THRESH   = 0.03   # [P3U2.8 FROZEN 2026-07-25] ranking-aware VAL operating point: among thresholds
                                 # with recall >= 0.98*max, the max-CPM one. 3-seed mean @ 0.03: recall 0.867
                                 # (std 0.047), CPM 0.553, 101.2 cands/vol (<= budget 200). == DET_SELECT_OP_THRESH.
+                                # [RB_AUG_FLIP_AB A.4f, 2026-08-04] CONFIRMED by the first JOINT (op x epoch)
+                                # search — [P3U2.8] swept the op with the epochs held FIXED, so op and epoch had
+                                # only ever been optimised sequentially. Re-selecting every epoch at op 0.02
+                                # leaves the deployed arm preferring 0.03: dCPM +0.0018 (a tie inside
+                                # DET_SELECT_CPM_TOL) for -4 lesions of recall ceiling (0.8667 -> 0.8222) and
+                                # 2.6x the CPM variance (std 0.0146 -> 0.0376). 0.03 is confirmed, not inherited.
+                                # NOTE: the A2 rule that picked it is not well-posed on a MONOTONE recall curve —
+                                # see INVARIANTS_AMENDMENTS_PROPOSED.md (dormant; deployed linker is non-monotone).
 PREFILTER_SCORE_FLOOR  = 0.08   # [P3U2.7 FROZEN 2026-07-24] LUNA/NoduleSAT-style per-candidate score_max floor:
                                 # drop tubes whose peak per-slice score < this, applied BEFORE the 3D NMS, in
                                 # EVERY pool path (generate, linked_recall, select, calibrate, reducer gate). THE

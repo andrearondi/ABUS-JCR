@@ -71,6 +71,10 @@ def main() -> int:
     parser.add_argument("--ceiling-frac", type=float, default=C.RECALL_CEILING_FRAC)
     parser.add_argument("--allow-nonmonotone", action="store_true",
                         help="do NOT fail on a non-monotone curve (diagnostic escape hatch only)")
+    parser.add_argument("--run-suffix", default="",
+                        help="read retinanet_full_seed<s>_<suffix>.pt instead of the deployed "
+                             "retinanet_full_seed<s>.pt, and tag the detection cache with it "
+                             "(RB_FOLD_FLIP.md). Empty = the deployed arm.")
     parser.add_argument("--no-cache", action="store_true",
                         help="do not read/write the per-volume detection cache (force recompute)")
     parser.add_argument("--device", default="cuda")
@@ -92,9 +96,10 @@ def main() -> int:
     # resumes), then sweep every threshold by filtering the cached detections.
     seed_curves = {}
     for s in C.DET_FULL_SEEDS:
-        model, _ = load_checkpoint(checkpoints_dir(args) / f"retinanet_full_seed{s}.pt")
+        sfx = f"_{args.run_suffix}" if args.run_suffix else ""
+        model, _ = load_checkpoint(checkpoints_dir(args) / f"retinanet_full_seed{s}{sfx}.pt")
         model.to(args.device)
-        tag = f"full_seed{s}_op{op_min}"
+        tag = f"full_seed{s}{sfx}_op{op_min}"   # suffix MUST be here: else the arms share caches
         det_min = {}
         for k, v in enumerate(val_ids, 1):
             det_min[v] = load_or_run_detections(

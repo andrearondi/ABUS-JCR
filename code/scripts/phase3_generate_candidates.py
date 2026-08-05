@@ -57,6 +57,11 @@ def main() -> int:
                              "the deployed retinanet_fold<f>.pt — the deployed files are NOT touched.")
     parser.add_argument("--seed-epochs", default=None,
                         help="[P3U3] same, for the full-train seeds: '<seed>:<epoch>,...' (rarely needed)")
+    parser.add_argument("--run-suffix", default="",
+                        help="read an ALTERNATIVE detector generation, e.g. 'latflip' -> "
+                             "checkpoints/retinanet_fold<f>_latflip.pt. The deployed files are never "
+                             "read when this is set. Also enters the detection-cache tag, so the two "
+                             "arms cannot share cached detections (RB_FOLD_FLIP.md).")
     parser.add_argument("--record-suffix", default="",
                         help="[P3U3] suffix for the output record/pred files, e.g. 'hicov' -> "
                              "candidates_train_hicov.parquet. Empty (default) = the primary pool.")
@@ -97,7 +102,7 @@ def main() -> int:
     pool = generate_split(
         manifest, cache_root(args), checkpoints_dir(args), args.split, gt_df,
         op_score_thresh=args.op_score_thresh, detections_cache_dir=cache_dir, progress=True,
-        epoch_overrides=epoch_overrides or None)
+        epoch_overrides=epoch_overrides or None, run_suffix=args.run_suffix)
 
     out_dir = Path(args.out_root) / "candidates"
     out_dir.mkdir(parents=True, exist_ok=True)
