@@ -32,10 +32,13 @@ def main() -> int:
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--flip-stack-axis", type=int, default=None, choices=[0, 1],
                         help="in-plane axis of the (C, d0, d1) stack the mirror flip acts on. "
-                             "Default = augment.TRAIN_AUGMENT['flip_stack_axis'] (1 = d1, the "
-                             "DEPLOYED behaviour). 0 = d0 = the corrected lateral flip — see "
-                             "results/AXIS_CHECK.md and runbooks/RB_AUG_FLIP_AB.md. Changing "
-                             "this REQUIRES --run-suffix so deployed checkpoints stay untouched.")
+                             "Default = augment.TRAIN_AUGMENT['flip_stack_axis'] (0 = d0 = the "
+                             "measured LATERAL axis, DEPLOYED since 2026-08-08). 1 = d1 = the "
+                             "measured DEPTH/BEAM axis, which Inv. 13 forbids — it is the "
+                             "pre-2026-08-08 default, kept reachable only to reproduce the archived "
+                             "arm. See results/AXIS_CHECK.md, runbooks/RB_AUG_FLIP_AB.md and "
+                             "RB_FOLD_FLIP.md. Changing this REQUIRES --run-suffix so deployed "
+                             "checkpoints stay untouched.")
     parser.add_argument("--run-suffix", default="",
                         help="append to the run name -> checkpoints/<run>_<suffix>/. Use for any "
                              "experimental arm; without it an arm would overwrite a deployed run.")

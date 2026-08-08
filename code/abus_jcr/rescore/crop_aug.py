@@ -24,11 +24,16 @@ beam axis — skin at the bottom, shadows pointing back at the transducer — wh
 explicitly forbids. Fixed here to the measured lateral axis, ``d0``.
 
 Safe to change now, and only now: **no rescorer has been trained yet**, so the code and the
-models it describes agree. The same defect in the *detector* augmentation
-(``augment.TRAIN_AUGMENT["flip_stack_axis"] == 1``) is deliberately NOT corrected — eight
-detectors are already deployed under it, and silently flipping the constant would leave the
-code describing models that were never trained that way. Its measured cost is recorded in
-``results/RESULTS_AUG_FLIP_AB.md``.
+models it describes agree.
+
+UPDATE 2026-08-08. The same defect in the *detector* augmentation
+(``augment.TRAIN_AUGMENT["flip_stack_axis"]``) is **also corrected now** — it was held at ``1``
+while 8 detectors were deployed under it, all 8 have since been retrained on ``d0`` and
+PROMOTED (``runbooks/RB_FOLD_FLIP.md``), and Inv. 13 amendment (b) records it. So **both**
+behavioural consumers of the inverted axis names are on the measured lateral axis and
+**Inv. 13 is no longer violated anywhere.** The measured cost of the defect is in
+``results/RESULTS_AUG_FLIP_AB.md`` (3 paired seeds) and ``results/RESULTS_FOLD_FLIP.md``
+(5 folds + the promotion decision).
 """
 
 from __future__ import annotations

@@ -166,12 +166,17 @@ def apply_train_augment(
             on_op(name, params)
 
     # --- spatial: mirror flip, shared across channels ---
-    # `flip_stack_axis` selects WHICH in-plane axis is mirrored: 1 = d1 (deployed default),
-    # 0 = d0. See augment.TRAIN_AUGMENT — the axis roles were recorded inverted, so the
-    # deployed default mirrors depth. The op name emitted stays "hflip" either way so the
-    # Inv.-13 consistency test keeps working unchanged.
+    # `flip_stack_axis` selects WHICH in-plane axis is mirrored: 0 = d0 = measured LATERAL
+    # (deployed default since 2026-08-08), 1 = d1 = measured DEPTH/BEAM (forbidden by Inv. 13;
+    # the pre-2026-08-08 default, kept reachable so the archived arm is reproducible). See
+    # augment.TRAIN_AUGMENT. The op name emitted stays "hflip" either way so the Inv.-13
+    # channel-consistency test keeps working unchanged.
+    #
+    # NOTE the coin is drawn BEFORE the axis branch, so both settings consume the same number of
+    # RNG draws and the flip fires on the IDENTICAL set of samples. That is what made the
+    # RB_AUG_FLIP_AB A/B paired down to the augmentation draw — do not reorder these two lines.
     if float(policy.get("horizontal_flip_p", 0.0)) > 0.0 and rng.random() < policy["horizontal_flip_p"]:
-        flip_axis = int(policy.get("flip_stack_axis", 1))
+        flip_axis = int(policy.get("flip_stack_axis", 0))
         if flip_axis not in (0, 1):
             raise ValueError(f"flip_stack_axis must be 0 (d0) or 1 (d1), got {flip_axis!r}")
         if flip_axis == 1:

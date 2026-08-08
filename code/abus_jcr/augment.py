@@ -38,16 +38,28 @@ TRAIN_AUGMENT = {
     # allowed
     "horizontal_flip": True,         # the L-R-symmetry flip; see flip_stack_axis for WHICH axis
     "horizontal_flip_p": 0.5,
-    # [2026-08-02] WHICH in-plane axis of the (C, d0, d1) stack the allowed flip acts on.
-    #   1 = d1  <- DEPLOYED DEFAULT. Every recorded detector and the rescorer encoder trained here.
-    #   0 = d0
-    # The names above ("horizontal" / "vertical") describe IMAGE geometry and are attached to the
-    # WRONG physical axis: d1 is the depth/beam axis and d0 is lateral (measured on 129/130 volumes
-    # — results/AXIS_CHECK.md). So the deployed default flips DEPTH, which Inv. 13 forbids, while
-    # the genuinely symmetry-preserving lateral flip (d0) is the one switched off.
-    # The default is left at 1 so this module stays byte-identical to what produced every recorded
-    # number; setting 0 is the corrected policy, exercised by the A/B in RB_AUG_FLIP_AB.md.
-    "flip_stack_axis": 1,
+    # WHICH in-plane axis of the (C, d0, d1) stack the allowed flip acts on.
+    #   0 = d0 = the MEASURED LATERAL axis  <- DEPLOYED DEFAULT since 2026-08-08.
+    #   1 = d1 = the MEASURED DEPTH/BEAM axis (Inv. 13 forbids flipping it).
+    # The names above ("horizontal" / "vertical") describe IMAGE geometry and were attached to the
+    # WRONG physical axis: d1 is depth/beam and d0 is lateral (measured four independent ways on
+    # 129/130 volumes -- results/AXIS_CHECK.md, RESULTS_INTENSITY_PROBE.md [I.3]).
+    #
+    # [CORRECTED 2026-08-08, Inv. 13 amendment (b)] Was 1 until this date, i.e. every detector
+    # trained before it had a 50% chance of a DEPTH flip -- skin at the bottom, shadows pointing back
+    # at the transducer -- which Inv. 13 explicitly forbids, while the genuinely symmetry-preserving
+    # lateral flip was switched off. It was held at 1 while those 8 detectors were deployed, so the
+    # code would not describe models that were never trained that way. All 8 have now been retrained
+    # on axis 0 and PROMOTED (runbooks/RB_FOLD_FLIP.md), so code and models agree again.
+    #
+    # Measured cost of the defect (RESULTS_AUG_FLIP_AB.md, 3 paired seeds; RESULTS_FOLD_FLIP.md,
+    # 5 folds): correcting it gives linked val CPM 0.5567 -> 0.6327, a 14% smaller val pool, HALF the
+    # distinct FP locations, +11/100 TP-bearing training volumes, and a monotone recall-vs-threshold
+    # curve where the old one was pathological inside its own deployment region -- at a cost of 1
+    # lesion of recall ceiling (78/90 -> 77/90), inside the ~2.4-lesion sampling error of that total.
+    # The pre-2026-08-08 arm is the ARCHIVED control; `--flip-stack-axis 1 --run-suffix <sfx>`
+    # reproduces it (phase2_train_retinanet.py refuses a non-default axis without a suffix).
+    "flip_stack_axis": 0,
     "intensity_jitter": True,        # grayscale brightness/contrast
     "brightness_contrast_limit": 0.2,
     "gaussian_blur": True,
@@ -74,13 +86,11 @@ TRAIN_AUGMENT = {
 def hflip_stack(stack: np.ndarray, axis: int = None) -> np.ndarray:
     """Mirror a ``(C, d0, d1)`` stack along one in-plane axis, identically across channels.
 
-    ``axis`` is the STACK axis to mirror: 1 = ``d1``, 0 = ``d0``. It defaults to
-    ``TRAIN_AUGMENT["flip_stack_axis"]`` (currently 1 — the deployed behaviour). Whichever
-    is chosen, the same operation is applied to every channel so the 2.5D channels stay
-    synchronised (Inv. 13).
-
-    Which of the two is physically legitimate depends on the axis roles, and those were
-    recorded wrongly — see ``flip_stack_axis`` above and ``results/AXIS_CHECK.md``.
+    ``axis`` is the STACK axis to mirror: 0 = ``d0`` (measured LATERAL — the legitimate flip),
+    1 = ``d1`` (measured DEPTH/BEAM — forbidden by Inv. 13). It defaults to
+    ``TRAIN_AUGMENT["flip_stack_axis"]`` (**0 since 2026-08-08**; it was 1 before, which is the
+    Inv.-13 defect described there). Whichever is chosen, the same operation is applied to every
+    channel so the 2.5D channels stay synchronised (Inv. 13).
     """
     stack = np.asarray(stack)
     if stack.ndim != 3:

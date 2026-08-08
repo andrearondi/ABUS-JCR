@@ -1,8 +1,15 @@
 """ABUS-physics augmentation policy (Inv. 13), written now, exercised in Phase 2.
 
-Depth axis d0 is special (skin at top, shadows downward) => NO vertical flip, NO
-large rotation, NO mosaic/mixup. Horizontal flip (lateral d1) is allowed and must
+The DEPTH/BEAM axis is special (skin at top, shadows downward) => NO flip along it, NO
+large rotation, NO mosaic/mixup. The mirror flip along the LATERAL axis is allowed and must
 be applied identically across the C channel-slices or the stack desynchronises.
+
+**Axis roles corrected 2026-08-08.** This file previously said "depth axis d0 / lateral d1".
+That is backwards: **`d1` is depth/beam and `d0` is lateral**, measured four independent ways
+on 129/130 volumes (`results/AXIS_CHECK.md`). The flip test below asserted `d1` and *called it
+lateral*, so it would have PASSED the Inv.-13-violating implementation — the same defect
+already found and fixed in `test_rescore_crop_aug.py`. It now asserts `d0` and explicitly
+rejects the `d1` flip.
 """
 
 import numpy as np
@@ -24,12 +31,16 @@ def test_policy_allowed_ops_on():
     assert TRAIN_AUGMENT["intensity_jitter"] is True
 
 
-def test_hflip_is_lateral_and_channel_consistent():
+def test_hflip_is_lateral_d0_and_channel_consistent():
+    """The default flip must mirror d0 (MEASURED lateral), never d1 (measured depth/beam)."""
     rng = np.random.default_rng(0)
     stack = rng.random((C.C_CHANNELS, 6, 8), dtype=np.float64).astype(np.float32)
     flipped = hflip_stack(stack)
-    # flips along d1 (col = last axis), i.e. lateral, not depth
     for c in range(C.C_CHANNELS):
-        np.testing.assert_array_equal(flipped[c], stack[c][:, ::-1])
+        # d0 = row axis = the measured LATERAL axis
+        np.testing.assert_array_equal(flipped[c], stack[c][::-1, :])
+        # and NOT d1 — a depth flip is acoustically impossible (Inv. 13). This assertion is
+        # what makes the test able to fail if the defect is ever re-introduced.
+        assert not np.array_equal(flipped[c], stack[c][:, ::-1])
     # identical transform across channels => involution restores the original
     np.testing.assert_array_equal(hflip_stack(flipped), stack)

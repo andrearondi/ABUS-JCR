@@ -1,8 +1,14 @@
-"""Tests for the selectable mirror-flip axis (the RB_AUG_FLIP_AB.md experimental arm).
+"""Tests for the selectable mirror-flip axis (Inv. 13).
 
-The load-bearing property is the FIRST test: the default must be byte-identical to what
-produced every recorded detector. An A/B whose control arm has silently drifted measures
-nothing.
+The load-bearing property is the FIRST test: the default must be the axis every DEPLOYED
+detector was trained on. If it drifts, the code silently describes models that do not exist.
+
+**Updated 2026-08-08.** Until then the default was ``1`` (= ``d1``, the measured DEPTH/beam
+axis) and this test pinned it there, because 8 detectors were deployed under it and the
+RB_AUG_FLIP_AB A/B needed an undrifted control arm. All 8 have now been retrained on ``d0``
+(the measured lateral axis) and PROMOTED — see runbooks/RB_FOLD_FLIP.md and the Inv. 13
+amendment (b) — so the default is ``0`` and the ``d1`` arm is the ARCHIVED control. Both axes
+stay reachable and tested: ``d1`` is how the archived arm is reproduced.
 """
 
 from __future__ import annotations
@@ -18,17 +24,21 @@ def _stack(rng, c=3, h=8, w=10):
     return rng.random((c, h, w)).astype(np.float32)
 
 
-def test_default_is_still_d1_so_the_control_arm_is_unchanged():
-    """The deployed default must not move — every recorded number depends on it."""
-    assert TRAIN_AUGMENT["flip_stack_axis"] == 1
+def test_default_is_d0_the_measured_lateral_axis():
+    """The deployed default must not move — every recorded number depends on it.
+
+    ``0`` since 2026-08-08 (Inv. 13 amendment (b)); was ``1`` before, which is the defect.
+    A d1 default would mean the detectors trained with a 50 % chance of a DEPTH flip.
+    """
+    assert TRAIN_AUGMENT["flip_stack_axis"] == 0
 
 
-def test_hflip_stack_default_matches_the_pre_change_implementation():
+def test_hflip_stack_default_mirrors_d0_and_both_axes_stay_reachable():
     rng = np.random.default_rng(0)
     s = _stack(rng)
-    np.testing.assert_array_equal(hflip_stack(s), s[:, :, ::-1])
-    np.testing.assert_array_equal(hflip_stack(s, axis=1), s[:, :, ::-1])
+    np.testing.assert_array_equal(hflip_stack(s), s[:, ::-1, :])            # default = d0 = lateral
     np.testing.assert_array_equal(hflip_stack(s, axis=0), s[:, ::-1, :])
+    np.testing.assert_array_equal(hflip_stack(s, axis=1), s[:, :, ::-1])    # archived arm, still reachable
 
 
 def test_hflip_stack_is_its_own_inverse_on_both_axes():

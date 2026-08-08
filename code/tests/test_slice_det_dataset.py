@@ -92,8 +92,14 @@ def test_load_numpy_sample_hflip_syncs_box_and_channels(tmp_path):
     rng = np.random.default_rng(0)
     stack, boxes = ds.load_numpy_sample(100, 2, rng)
     assert stack.shape == (C.C_CHANNELS, d0, d1)
-    # centre channel is slice 2; near->far channels are slices 1,2,3
-    np.testing.assert_array_equal(stack[0], np.full((d0, d1), 1.0)[:, ::-1])
-    np.testing.assert_array_equal(stack[1], np.full((d0, d1), 2.0)[:, ::-1])
-    # box (c0,r0,c1+1,r1+1)=(1,1,5,4) reflected in W=8 -> (8-5,1,8-1,4)=(3,1,7,4)
-    np.testing.assert_array_equal(boxes, np.array([[3.0, 1.0, 7.0, 4.0]], dtype=np.float32))
+    # Channel identity/sync: centre channel is slice 2, near->far are slices 1,2,3. NOTE these two
+    # assertions are AXIS-AGNOSTIC — each synthetic slice is a CONSTANT fill, so a mirror along d0 or
+    # d1 is equally invisible. They pin channel sync, NOT which axis was flipped.
+    np.testing.assert_array_equal(stack[0], np.full((d0, d1), 1.0))
+    np.testing.assert_array_equal(stack[1], np.full((d0, d1), 2.0))
+    # The BOX is what pins the axis. Corrected 2026-08-08 (Inv. 13 amendment (b)): the deployed flip is
+    # d0 = measured LATERAL, so the y (= d0) pair reflects about H = d0 = 6 and x is untouched:
+    # box (c0,r0,c1+1,r1+1) = (1,1,5,4) -> (1, 6-4, 5, 6-1) = (1,2,5,5).
+    # Before the correction this expected (3,1,7,4) — the d1 (depth) reflection Inv. 13 forbids.
+    assert D.TRAIN_AUGMENT["flip_stack_axis"] == 0, "the deployed policy must flip d0"
+    np.testing.assert_array_equal(boxes, np.array([[1.0, 2.0, 5.0, 5.0]], dtype=np.float32))

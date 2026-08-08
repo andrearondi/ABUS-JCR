@@ -214,8 +214,23 @@ DET_SELECTION_METRIC    = "val_linked_cpm_3d@0.3_posthoc"
 # U-shape), so the old min_epoch=15 floor selected the overfit tail. Floor lowered to 3 (skip only the
 # pre-convergence epochs 0-2); the selector still EVALUATES + prints epochs from 0 for completeness.
 DET_SELECT_MIN_EPOCH    = 3        # earliest epoch eligible for SELECTION (0-2 shown but not selectable)
-DET_SELECT_CPM_TOL      = 0.02     # CPM within this of the max is a tie on 30 val lesions (~1/30 step);
-                                   # break such ties on the highest recall ceiling, then earliest epoch.
+DET_SELECT_CPM_TOL      = 0.10     # [Inv. 2 / A1-tau AMENDMENT, ADOPTED 2026-08-08] was 0.02.
+                                   # Among epochs whose CPM is within this of the max AND whose post-floor
+                                   # pool <= RESCORER_POOL_BUDGET, take the highest recall ceiling, then the
+                                   # higher CPM, then the earliest epoch. BOTH regimes (fold + full-seed).
+                                   # 0.02 was a NOISE width ("CPM moves in ~1/30 steps on 30 val lesions");
+                                   # the rule is also asked "how much CPM will I pay for recall?", which is a
+                                   # PREFERENCE. One constant was doing both jobs. Recall is what Inv. 8 makes
+                                   # unrecoverable downstream, and A2 was already recall-first while A1 was
+                                   # CPM-first -- so this removes an inconsistency, it does not add a novelty.
+                                   # Measured (RESULTS_FOLD_FLIP [F.6b]): fold coverage 77 -> 81/100 and seed
+                                   # ceiling 75 -> 77/90 vs tau 0.02, pools unchanged, -0.027 seed CPM. A NO-OP
+                                   # on the pre-2026-08-08 arm (its CPM and ceiling are co-monotone) and on 2 of
+                                   # 3 promoted seeds. Declared SECONDARY read: tau_seed = 0.02 (the max-CPM
+                                   # checkpoint = the "detector as normally used" Inv.-8 baseline).
+                                   # Forking-path caveat: AUGMENTATION_NOTES.md 14.7 -- adopted 2026-08-05 after
+                                   # the 14.3 simulation showed its effect, and it flips the promote outcome.
+                                   # Not headroom-gaming: B0' RISES to 0.6327 and headroom SHRINKS 0.310 -> 0.223.
 DET_SELECT_OP_THRESH    = 0.03     # reference op for post-hoc selection. NOTE (P3U): the retrained detector
                                    # de-compressed its scores, so 0.03 sits ABOVE its recall knee — after
                                    # [P3U.4b] reveals the saturating op, set this to it and re-select Stage-2.
@@ -391,7 +406,11 @@ RESC_D_APP           = 128   # appearance embedding width after GAP + linear
 RESC_ENC_EPOCHS      = 30    # fixed annealed budget, save every epoch, post-hoc selection
 RESC_ENC_BATCH       = 32
 RESC_ENC_OPT         = {"name": "AdamW", "lr": 1e-4, "weight_decay": 0.05}
-RESC_ENC_AUG         = {"hflip_d1_p": 0.5, "centre_jitter_frac": 0.10}  # Inv. 13; NO d0 flip
+                       # NOTE the key name `hflip_d1_p` is HISTORICAL and is kept only so no recorded
+                       # config changes. It means "p of the mirror flip", and since the 2026-08-04 fix
+                       # that flip acts on `d0` = the MEASURED LATERAL axis (rescore/crop_aug.FLIP_AXIS
+                       # = 0). There is deliberately NO flip along d1 (depth/beam) — Inv. 13.
+RESC_ENC_AUG         = {"hflip_d1_p": 0.5, "centre_jitter_frac": 0.10}
 # Pre-registered FALLBACK encoder (spec Open escalation #2). NOT deployed. Fires only if exit
 # check 4 fails (B1 val CPM <= B0 0.5567): swap to a 4-block ~1M-param 3D CNN and re-run [4.3].
 RESC_ENCODER_FALLBACK = "small_cnn_3d"

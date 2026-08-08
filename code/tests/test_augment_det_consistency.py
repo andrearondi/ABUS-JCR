@@ -45,20 +45,59 @@ def test_enabling_a_forbidden_op_raises():
         A.apply_train_augment(stack, boxes, rng, policy=policy)
 
 
-def test_hflip_is_lateral_shared_across_channels_and_moves_boxes():
+def _both_axis_marked_stack(d0=6, d1=8):
+    """Varies along BOTH in-plane axes, so a flip on either one is visible.
+
+    `_channel_marked_stack` is **constant along d0** by construction (every row is the same
+    d1 gradient), which would make a d0-flip assertion vacuous — precisely the way a test can
+    pin the wrong axis and still pass. Do not use it for the flip test.
+    """
+    stack = np.zeros((C.C_CHANNELS, d0, d1), dtype=np.float32)
+    rows = np.arange(d0, dtype=np.float32)[:, None] * 10.0
+    cols = np.arange(d1, dtype=np.float32)[None, :]
+    for c in range(C.C_CHANNELS):
+        stack[c] = rows + cols + 100.0 * c
+    return stack
+
+
+def test_hflip_is_lateral_d0_shared_across_channels_and_moves_boxes():
+    """Inv. 13: the mirror flip acts on d0 (MEASURED lateral), never d1 (measured depth/beam).
+
+    Axis roles corrected 2026-08-08 — this test previously asserted the d1 flip and called it
+    "lateral", so it would have PASSED the Inv.-13-violating implementation.
+    """
     policy = dict(TRAIN_AUGMENT, horizontal_flip_p=1.0,
                   small_translation=False, intensity_jitter=False,
                   gaussian_blur=False, gaussian_noise=False,
                   scale_zoom=False, rotation=False)
+    assert policy["flip_stack_axis"] == 0, "the deployed policy must flip d0"
     rng = np.random.default_rng(0)
-    stack = _channel_marked_stack(d0=6, d1=8)
-    boxes = np.array([[1.0, 2.0, 5.0, 4.0]], dtype=np.float32)  # half-open, W=8
+    stack = _both_axis_marked_stack(d0=6, d1=8)
+    boxes = np.array([[1.0, 1.0, 5.0, 4.0]], dtype=np.float32)  # (x1,y1,x2,y2) = (d1,d0,d1,d0)
     out_stack, out_boxes = A.apply_train_augment(stack, boxes, rng, policy=policy)
 
-    # every channel flipped identically along d1 (lateral), never d0 (depth)
+    for c in range(C.C_CHANNELS):
+        # every channel mirrored identically along d0 = the row axis = lateral
+        np.testing.assert_array_equal(out_stack[c], stack[c][::-1, :])
+        # and NOT along d1 — the tripwire if the defect is ever re-introduced
+        assert not np.array_equal(out_stack[c], stack[c][:, ::-1])
+    # box reflects the y (= d0) pair about H=6: (x1, H-y2, x2, H-y1) = (1, 2, 5, 5); x untouched
+    np.testing.assert_allclose(out_boxes[0], [1.0, 2.0, 5.0, 5.0])
+
+
+def test_the_archived_d1_arm_is_still_reproducible():
+    """`--flip-stack-axis 1` must keep working — it is how the pre-2026-08-08 arm is rebuilt."""
+    policy = dict(TRAIN_AUGMENT, flip_stack_axis=1, horizontal_flip_p=1.0,
+                  small_translation=False, intensity_jitter=False,
+                  gaussian_blur=False, gaussian_noise=False,
+                  scale_zoom=False, rotation=False)
+    rng = np.random.default_rng(0)
+    stack = _both_axis_marked_stack(d0=6, d1=8)
+    boxes = np.array([[1.0, 2.0, 5.0, 4.0]], dtype=np.float32)
+    out_stack, out_boxes = A.apply_train_augment(stack, boxes, rng, policy=policy)
     for c in range(C.C_CHANNELS):
         np.testing.assert_array_equal(out_stack[c], stack[c][:, ::-1])
-    # box reflected: (W - x2, y1, W - x1, y2) = (3, 2, 7, 4)
+    # box reflects the x (= d1) pair about W=8: (W-x2, y1, W-x1, y2) = (3, 2, 7, 4)
     np.testing.assert_allclose(out_boxes[0], [3.0, 2.0, 7.0, 4.0])
 
 
