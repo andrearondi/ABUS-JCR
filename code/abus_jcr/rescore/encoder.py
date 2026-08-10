@@ -16,10 +16,17 @@ ablation isolates the set module and never the encoder — and makes each set-mo
 seconds instead of GPU-hours.
 
 **Capacity (spec Open escalation #2).** MONAI DenseNet-121-3D (~11 M params) is the default;
-it sees only 943 positives across 8 061 loss-bearing train crops, but because the encoder is
-frozen and *shared*, any overfit is common to every rung and cannot confound the ablation.
-The pre-registered fallback with a measurable trigger — exit check 4 failing, i.e. B1 val CPM
-≤ B0's 0.5567 — is :class:`SmallCandidateEncoder` (~1 M params), re-run at [4.3].
+on the promoted pool it sees **1 265 positives across 9 118 loss-bearing train crops** (was
+943 / 8 061), still few, but because the encoder is frozen and *shared*, any overfit is
+common to every rung and cannot confound the ablation. The pre-registered fallback is
+:class:`SmallCandidateEncoder` (~1 M params), re-run at [4.3].
+
+Its trigger is exit check 4 failing — B1 val CPM ≤ the **measured** B0 — **and** B1's
+per-candidate balanced accuracy landing well below the pool's own single-feature ceiling
+(0.811 on the promoted val pool, [F.9] §1). Both halves are required: a B1 that discriminates
+as well as the pool's best single feature yet does not beat B0 on CPM is telling you B0 is a
+strong ranking (``score_max`` δ 0.713, 39.8 % of the volume-trust signal), not that the
+encoder is broken — and swapping the encoder would be the wrong response.
 
 Torch-only module.
 """

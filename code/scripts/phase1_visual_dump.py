@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
 from abus_jcr import cache as K
+from abus_jcr import conventions as C
 from abus_jcr.conventions import SLICE_AXIS
 from abus_jcr.slice_labels import boxes_for_slice
 
@@ -67,9 +68,20 @@ def main() -> int:
             for (r0, c0, r1, c1) in boxes:
                 ax.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), (c1 - c0 + 1), (r1 - r0 + 1),
                                        fill=False, edgecolor="red", linewidth=1.2))
-            ax.set_title(f"case {cid}  z={z}  (d0=depth down, d1=lateral)")
-            ax.set_xlabel("d1 (lateral)")
-            ax.set_ylabel("d0 (depth)")
+            # Labels from the MEASURED physical axis roles (results/AXIS_CHECK.md), not from
+            # the historical "d0 = depth" assumption they carried until 2026-08-09 — that was
+            # the inverted map, and a mislabelled orientation figure is exactly the hazard this
+            # dump exists to catch. The PIXELS are unchanged (no transpose), so every figure
+            # already in report/REPORT_PHASE_1.md is still the same image; only the axis names
+            # are corrected. Consequence to expect: `d0` is LATERAL and is the vertical axis
+            # here, so depth runs LEFT->RIGHT and the bright skin/coupling line is at the LEFT
+            # edge, not the top. It is a transposed B-mode frame, on BOTH profiles.
+            row_role = "depth" if C.DEPTH_AXIS == C.IN_PLANE_ROW_AXIS else "lateral"
+            col_role = "depth" if C.DEPTH_AXIS == C.IN_PLANE_COL_AXIS else "lateral"
+            ax.set_title(f"case {cid}  z={z}  [{C.AXIS_PROFILE}]  "
+                         f"(d0={row_role} down, d1={col_role})")
+            ax.set_xlabel(f"d1 ({col_role})")
+            ax.set_ylabel(f"d0 ({row_role})")
             out = fig_dir / f"overlay_{args.split}_{cid}_z{z}.png"
             fig.savefig(out, dpi=110, bbox_inches="tight")
             plt.close(fig)

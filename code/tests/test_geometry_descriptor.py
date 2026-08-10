@@ -88,11 +88,28 @@ def test_batched_leading_dimension_is_supported():
     np.testing.assert_allclose(g[0], np.asarray(relative_geometry_batch(coord, length)), atol=1e-12)
 
 
-def test_coordZ_is_the_depth_beam_axis():
-    """State it, do not rediscover it: PERM_STORAGE_TO_ITK = (2,1,0), so the official
-    ``coordZ``/``z_length`` IS storage d0 — the depth/beam axis Phase-0b implicates."""
+def test_the_official_axis_names_map_to_the_MEASURED_storage_roles():
+    """State it, do not rediscover it — and state it CORRECTLY.
+
+    ``PERM_STORAGE_TO_ITK = (2,1,0)`` maps official ``(x,y,z)`` to storage ``(d2,d1,d0)``.
+    The storage roles were MEASURED on 129/130 volumes (``results/AXIS_CHECK.md``, four
+    independent lines): ``d0 = lateral``, ``d1 = depth/beam``, ``d2 = sweep`` — the reverse
+    of what ``conventions.IN_PLANE_*`` still declares. So::
+
+        coordX <-> d2 = sweep     coordY <-> d1 = DEPTH/BEAM     coordZ <-> d0 = LATERAL
+
+    This test previously asserted ``coordZ`` was the depth/beam axis, which is the same
+    class of error as the five tests that pinned the Inv.-13 flip to ``d1`` and called it
+    lateral. The arithmetic never depended on it (every ``g(m,n)`` component is a ratio);
+    the *reporting* does — on the promoted val pool the largest pairwise effect sits on
+    ``log|dz|/d``, i.e. the LATERAL axis, not the depth axis Phase-0b implicated ([F.9] §3).
+    """
     assert C.PERM_STORAGE_TO_ITK == (2, 1, 0)
-    assert C.PERM_STORAGE_TO_ITK[2] == 0
+    x_axis, y_axis, z_axis = C.PERM_STORAGE_TO_ITK
+    assert (x_axis, y_axis, z_axis) == (2, 1, 0)
+    # the depth/beam axis is d1, and it is reached through coordY -- never coordZ
+    assert y_axis == 1, "coordY is the depth/beam storage axis d1 (measured)"
+    assert z_axis == 0, "coordZ is the LATERAL storage axis d0 (measured), not depth/beam"
 
 
 def test_descriptor_is_unit_free_so_anisotropic_voxel_units_cancel():

@@ -60,7 +60,9 @@ def test_all_blocks_together_give_the_declared_width():
 
 
 def test_declared_block_dims_match_the_spec_table():
-    assert BLOCK_DIMS == {"appearance": C.RESC_D_APP, "abs_geom": 7,
+    # abs_geom is 6, not 7: the anisotropy dim was removed 2026-08-09 (see
+    # test_abs_geom_carries_no_extent_ratio and the tokens module docstring).
+    assert BLOCK_DIMS == {"appearance": C.RESC_D_APP, "abs_geom": 6,
                           "score_stats": 7, "tube_geom": 2, "rank": 17}
 
 
@@ -91,7 +93,7 @@ def test_appearance_block_may_be_omitted_without_an_embedding():
     X, names = build_feature_matrix(rec, emb=None,
                                     use_blocks=("abs_geom", "score_stats", "tube_geom", "rank"),
                                     iso_shape_by_pid=ISO_SHAPE)
-    assert X.shape[1] == 7 + 7 + 2 + 17
+    assert X.shape[1] == 6 + 7 + 2 + 17      # abs_geom is 6 since the anisotropy dim went
     assert not any(n.startswith("app") for n in names)
 
 
@@ -109,12 +111,37 @@ def test_zspan_and_fill_ratio_live_only_in_score_stats():
         assert len(hits) == 1 and hits[0].startswith("score_stats"), hits
 
 
-def test_abs_geom_carries_centroid_logsize_and_anisotropy_only():
+def test_abs_geom_carries_centroid_and_logsize_only():
     rec = _record()
     _, names = build_feature_matrix(rec, emb=_emb(len(rec)), iso_shape_by_pid=ISO_SHAPE)
     ag = [n.split(":", 1)[1] for n in names if n.startswith("abs_geom")]
     assert ag == ["cen_d0_norm", "cen_d1_norm", "cen_d2_norm",
-                  "log1p_ext_d0", "log1p_ext_d1", "log1p_ext_d2", "anisotropy"]
+                  "log1p_ext_d0", "log1p_ext_d1", "log1p_ext_d2"]
+
+
+def test_abs_geom_carries_no_extent_ratio():
+    """The ``anisotropy`` dim was REMOVED on 2026-08-09 (``abs_geom`` 7 -> 6).
+
+    It was computed as ``ext_d0 / mean(ext_d1, ext_d2)`` and PHASE_4.md §1.2 described it as
+    "depth-extent / mean-lateral-extent — the Phase-0b signal". Every part of that was wrong
+    or dead: ``d0`` is the MEASURED LATERAL axis (AXIS_CHECK.md, 129/130 volumes); a
+    physically cubic candidate reads 0.195 on the deployed cache's distorted scale, not 1.0;
+    it is the weakest of all 12 pool features (val delta 0.097, balacc 0.543 vs a 0.5 floor);
+    its motivating shadow-geometry hypothesis is a closed negative result (zero candidates
+    above 2x beam elongation in 8/8 detectors, [I.6b]); and it is ~95% recoverable from the
+    three ``log1p(ext_d*)`` beside it through one nonlinearity.
+
+    This pins the removal so it cannot drift back in under any name — the ratio, not the
+    label, is what was dropped."""
+    rec = _record()
+    X, names = build_feature_matrix(rec, emb=None, use_blocks=("abs_geom",),
+                                    iso_shape_by_pid=ISO_SHAPE)
+    assert X.shape[1] == 6 and len(names) == 6
+    assert not any(k in n for n in names for k in ("aniso", "elong", "ratio", "depth"))
+    # and no column equals the ratio numerically, whatever it might be called
+    other = (rec["ext_d1"].to_numpy(float) + rec["ext_d2"].to_numpy(float)) / 2.0
+    ratio = rec["ext_d0"].to_numpy(float) / other
+    assert not any(np.allclose(X[:, j], ratio) for j in range(X.shape[1]))
 
 
 def test_score_stats_block_is_the_frozen_column_list():
@@ -150,13 +177,16 @@ def test_centroids_are_normalised_by_the_volume_iso_shape():
     np.testing.assert_allclose(X[:, j], expected)
 
 
-def test_anisotropy_is_depth_over_mean_lateral_matching_the_phase0b_probe():
+def test_extents_enter_on_a_log1p_scale():
+    """The three log-sizes are what remains of abs_geom's size information after the
+    anisotropy dim was removed; any extent ratio the model wants is reconstructible from
+    them (measured R^2 = 0.945 through one nonlinearity)."""
     rec = _record()
     X, names = build_feature_matrix(rec, emb=None, use_blocks=("abs_geom",),
                                     iso_shape_by_pid=ISO_SHAPE)
-    j = names.index("abs_geom:anisotropy")
-    lat = (rec["ext_d1"].to_numpy(float) + rec["ext_d2"].to_numpy(float)) / 2.0
-    np.testing.assert_allclose(X[:, j], rec["ext_d0"].to_numpy(float) / lat)
+    for a in range(3):
+        j = names.index(f"abs_geom:log1p_ext_d{a}")
+        np.testing.assert_allclose(X[:, j], np.log1p(rec[f"ext_d{a}"].to_numpy(float)))
 
 
 def test_missing_iso_shape_is_a_loud_error_not_a_silent_default():

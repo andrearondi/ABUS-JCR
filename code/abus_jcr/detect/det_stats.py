@@ -40,8 +40,19 @@ def _snap_to_grid(value: float, grid: Sequence[float]) -> float:
 def derive_constants(stats: Dict, rule: Dict = C.DET_RULE) -> Dict:
     """The pinned rule: Train iso-space ``stats`` -> the 6 data-dependent constants.
 
-    - ``min_size = round_up(frame_d0_max, min_size_round)``,
-      ``max_size = round_up(frame_d1_max, max_size_round)``.
+    - ``min_size = round_up(SHORT frame side, min_size_round)``,
+      ``max_size = round_up(LONG frame side, max_size_round)``, where short/long
+      are ``min``/``max`` of ``(frame_d0_max, frame_d1_max)``.
+
+      **Axis-role fix, 2026-08-09.** This read ``d0 -> min_size, d1 -> max_size``
+      literally, which silently assumed ``d0`` is the SHORT side. That holds on the
+      legacy cache (158 vs 341) and is exactly backward-compatible there — ``min``
+      picks 158 and ``max`` picks 341, so the deployed 160 / 352 are unchanged. It
+      does NOT hold once the in-plane spacing roles are corrected: the same volumes
+      cache as 432 x 124, so the literal rule would hand torchvision
+      ``min_size=448 > max_size=128`` and the transform's "resize the SHORT side to
+      min_size, but cap the LONG side at max_size" contract would be inverted.
+      ``min``/``max`` states the rule's actual intent and is profile-independent.
     - ``image_mean = intensity_mean``, ``image_std = intensity_std``.
     - anchors: ``lo = diag_pct[anchor_diag_lo_pct]``, ``hi =
       diag_pct[anchor_diag_hi_pct]``. Smallest base ``b0 = 2**round(log2(lo))``;
@@ -51,8 +62,10 @@ def derive_constants(stats: Dict, rule: Dict = C.DET_RULE) -> Dict:
     - aspect ratios: the ``h/w`` values at ``aspect_pcts``, each snapped to the
       nearest ``aspect_grid`` entry, unioned with ``1.0``, deduped, sorted.
     """
-    min_size = round_up(stats["frame_d0_max"], rule["min_size_round"])
-    max_size = round_up(stats["frame_d1_max"], rule["max_size_round"])
+    short_side = min(stats["frame_d0_max"], stats["frame_d1_max"])
+    long_side = max(stats["frame_d0_max"], stats["frame_d1_max"])
+    min_size = round_up(short_side, rule["min_size_round"])
+    max_size = round_up(long_side, rule["max_size_round"])
 
     diag = stats["diag_pct"]
     lo = float(diag[str(rule["anchor_diag_lo_pct"])])

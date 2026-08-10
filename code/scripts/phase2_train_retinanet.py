@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from abus_jcr import cache as K
+from abus_jcr import conventions as C
 from abus_jcr.detect.train import train_detector
 from _phase2_common import add_phase2_paths, assert_device, cache_root, load_manifest, load_slice_boxes
 
@@ -49,6 +51,13 @@ def main() -> int:
     if args.regime == "full" and args.seed is None:
         parser.error("--regime full requires --seed")
     assert_device(args.device)
+    # Refuse a cache that was not built by THIS axis profile, before spending GPU-hours.
+    # `cache_dir` is named by `preprocess_hash`, which the profile changes, so a mismatched
+    # --phase1-out fails here rather than after loading the dataset (or, worse, succeeding
+    # against the wrong substrate). Print the pairing so every training log records it.
+    print(f"# axis profile = {C.AXIS_PROFILE} | spacing_storage_mm = {C.SPACING_STORAGE_MM}")
+    print(f"# iso cache    = {K.cache_dir(cache_root(args))}")
+    K.assert_hash(cache_root(args))
     fold_or_seed = args.fold if args.regime == "fold" else args.seed
 
     # A non-default augmentation MUST land under its own run name. Without this guard an

@@ -10,9 +10,24 @@ Two pieces:
    under autograd on the server — the parity claim is not deferred to a machine we cannot
    reach.
 
-   AXIS NOTE (state it, do not rediscover it): ``PERM_STORAGE_TO_ITK = (2,1,0)``, so the
-   official ``coordZ``/``z_length`` IS the depth/beam axis ``d0`` — the axis Phase-0b
-   implicates. Every component is a ratio, so the native anisotropic voxel units cancel.
+   AXIS NOTE — read this before interpreting any per-component result. CORRECTED
+   2026-08-09; the previous note here said ``coordZ`` was the depth/beam axis and it was
+   **wrong**, in the same direction as the Inv.-13 defect. ``PERM_STORAGE_TO_ITK = (2,1,0)``
+   maps official ``(x, y, z)`` to storage ``(d2, d1, d0)``, and the storage roles were
+   *measured* on 129/130 volumes (``results/AXIS_CHECK.md``, four independent lines) to be
+   ``d0 = lateral``, ``d1 = depth/beam``, ``d2 = sweep``. Therefore::
+
+       coordX / x_length  <->  d2  =  SWEEP
+       coordY / y_length  <->  d1  =  DEPTH / BEAM      <- the axis Phase-0b implicates
+       coordZ / z_length  <->  d0  =  LATERAL
+
+   So in ``g(m,n)`` the ``log|dy|/h`` component is the depth offset and ``log|dz|/d`` is the
+   lateral one. This matters for reporting, not for arithmetic: every component is a ratio,
+   so the native anisotropic voxel units cancel and the descriptor is unchanged either way.
+   It matters a great deal for the write-up — on the promoted val pool the largest pairwise
+   effect is ``log|dz|/d`` at ``|δ| = 0.126`` ([F.9] §3), which is the **lateral** axis, and
+   calling it "the depth axis, exactly where Phase-0b expected the signal" would invert the
+   finding. (See also ``conventions.FP_PROBE_ANISO_DEPTH_AXIS`` and ``[I.6b]``.)
 
 2. :class:`GeometryBias` — the learned per-head attention bias. ``additive`` (default,
    iRPE-style) is **zero-initialised**, so at step 0 rung A1 is numerically identical to
@@ -20,9 +35,12 @@ Two pieces:
    Networks form) is the pre-registered fallback, switched on only if A1 == B2 within CI,
    to distinguish "no signal" from "wrong mechanism".
 
-**Prior, pre-registered:** the direct test of this exact descriptor ([P3U2.PD]/[P3U3.8] §3)
-found TP-FP vs FP-FP ``max |δ| = 0.082`` — a WEAK prior. A null A1−B2 is a legitimate,
-publishable outcome, not a bug.
+**Prior, pre-registered:** the direct test of this exact descriptor on the PROMOTED pool
+([F.9] §3) found TP-FP vs FP-FP ``max |δ| = 0.126`` (0.112 / 0.181 / 0.072 per seed) — the
+same band as the archived pool's 0.082, i.e. still a **WEAK** prior; and the independent
+per-candidate FP-structure probe returns ``structure_present = false`` again. A null A1−B2 is
+a legitimate, publishable outcome, not a bug. The contrast that IS strong is TP-TP vs TP-FP
+at ``|δ| = 0.955`` — co-location/consensus, which jointness (B2) captures natively.
 """
 
 from __future__ import annotations

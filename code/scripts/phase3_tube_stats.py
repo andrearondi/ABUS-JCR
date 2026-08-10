@@ -11,9 +11,20 @@ re-links at a chosen operating point. Reports, over the Val volumes of one seed:
   * a 3D-NMS WHAT-IF: for each iou_thr, candidates/volume kept and linked 3D recall —
     so the pool/recall trade of adding a dedup step is measured before committing.
 
+⚠ CACHE IDENTITY. This script is CPU-only and reads the detection cache by the tag
+``full_seed{seed}[_{run_suffix}]_op{cache_op}``. It was the ONE Phase-3 script that never
+received ``--run-suffix`` at [F.0a], and that omission produced a real stale result at
+``[F.11e]``: after the promotion the run *name* was unchanged while the *weights* behind it
+were new, so ``full_seed0_op0.005`` still held the archived arm's detections and the output
+came back byte-identical to the pre-promotion paste. ``--run-suffix`` is now available
+(default ``""`` = the deployed names, so nothing existing changes). The tag is printed on
+every run — check it.
+
 Usage (server or local, wherever outputs/phase3/detections_cache/ lives):
     python scripts/phase3_tube_stats.py --out-root /home/maia-user/Andre2/outputs/phase3 \
         --data-root /home/maia-user/Andre2/data --seed 0 --op-score-thresh 0.03
+    # a parallel (non-deployed) arm:
+    python scripts/phase3_tube_stats.py ... --run-suffix latflip
 """
 
 from __future__ import annotations
@@ -63,13 +74,23 @@ def main() -> int:
                         help="3D-NMS iou thresholds for the what-if")
     parser.add_argument("--cluster-radius", type=float, default=C.FP_PROBE_CLUSTER_RADIUS,
                         help="iso-voxel radius for the redundancy clustering")
+    parser.add_argument("--run-suffix", default="",
+                        help="detector run suffix, threaded into the DETECTION-CACHE TAG "
+                             "(e.g. 'latflip' -> full_seed0_latflip_op0.005). Default '' = the "
+                             "deployed names, so no existing behaviour changes.")
     args = parser.parse_args()
 
     manifest = load_manifest(args)
     croot = cache_root(args)
     gt_idx = load_official_gt(args, "val").set_index("public_id")
     val_ids = sorted(int(v) for v in manifest[manifest["split"] == "val"]["volume_id"])
-    tag = f"full_seed{args.seed}_op{args.cache_op}"
+    sfx = f"_{args.run_suffix}" if args.run_suffix else ""
+    tag = f"full_seed{args.seed}{sfx}_op{args.cache_op}"
+    print(f"# detection-cache tag = {tag}")
+    print("#   ^ this script is CPU-only and cannot re-detect: it reports whatever is in that "
+          "directory. A cache tag names a RUN, not a MODEL, so after a promotion the deployed "
+          "name can still hold the archived arm's detections (RESULTS_FOLD_FLIP [F.11h]). If the "
+          "output reproduces a pre-promotion paste exactly, that is the symptom.")
 
     # per-tube accumulators
     slice_count, z_span, fill_ratio, score_max, score_mean, box_diag, aniso = ([] for _ in range(7))

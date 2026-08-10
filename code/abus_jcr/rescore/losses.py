@@ -6,11 +6,17 @@
   score differences, so it is invariant to adding any per-set constant and therefore
   **cannot set the cross-volume level**.
 * **focal BCE** (per candidate, batch-mean) is the *calibration* term — the only one that
-  supplies cross-volume gradient. That matters because the [P3U2.12] decomposition puts
-  **+0.2405 of the +0.3100 total headroom (77.6 %)** in cross-volume calibration and only
-  +0.0695 (22.4 %) in within-set ranking, a 3.5 : 1 ratio. Every ranking rung therefore
-  carries the BCE term at a swept λ, so A2/FULL vs B2 compares *ranking + BCE* against
-  *BCE alone* and the calibration confound is removed.
+  supplies cross-volume gradient. That matters because the headroom decomposition on the
+  PROMOTED pool ([F.8]) puts **+0.1754 of the +0.2229 total headroom (78.7 %)** in
+  cross-volume calibration and only +0.0475 (21.3 %) in within-set ranking, a **3.69 : 1**
+  ratio. Every ranking rung therefore carries the BCE term at a swept λ, so A2/FULL vs B2
+  compares *ranking + BCE* against *BCE alone* and the calibration confound is removed.
+
+  The DIRECTION of this argument survived the substrate promotion unchanged (it was 3.46 : 1
+  / 77.6 % on the archived pool), but the absolute prize shrank: ``score_max`` now captures
+  **39.8 %** of the distance from ``volume_neutral`` to ``per_vol_oracle``, versus 18.8 %
+  before, so ~60 % of the volume-trust signal is unexploited rather than ~81 %. Do not quote
+  the old +0.2405.
 
 **RS-loss is deliberately NOT offered.** Phase-0a single-lesion dominance (99/100 Train,
 29/30 Val) plus frozen localisation (the rescorer regresses no boxes) plus ``det_score.py``
@@ -18,9 +24,9 @@ collapsing duplicate hits make RS's "sort positives by IoU" term inert here. Rec
 decided flip condition, not an open choice.
 
 **Inv. 11:** ``label == "ignore"`` (IoU 0.1–0.3) is dropped from BOTH terms while staying
-in the set for attention. **Sets with no positive** (25/97 train sets) are KEPT: they
-contribute to ``focal_bce`` only, as the all-negative calibration anchors the level term
-needs.
+in the set for attention. **Sets with no positive** (**19 of 100** train sets on the promoted
+pool — 81/100 are TP-bearing, [F.9] §4; was 25/97) are KEPT: they contribute to ``focal_bce``
+only, as the all-negative calibration anchors the level term needs.
 
 Labels are encoded numerically: ``+1`` positive, ``0`` negative, ``-1`` ignore.
 Everything here is array-agnostic (numpy on the laptop, torch under autograd on the server).

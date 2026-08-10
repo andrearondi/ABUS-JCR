@@ -8,9 +8,11 @@ score-stats ablation stays clean).
 normalisation of the logits: that would be transductive (against Inv. 9's spirit) and
 ``g(m,n)`` is meaningless between patients.
 
-**Plain SAB, not ISAB.** The largest RECORDED set is 253 (≤ ``RESC_MAX_SET_SIZE`` 320), so
-the n² attention is ~10⁵ entries — cheap. ISAB is deliberately absent: its inducing points
-would delete the full n×n term that IS the Axis-A contribution.
+**Plain SAB, not ISAB.** On the promoted pool the largest set is **509** (train fold0 vol14;
+val's worst is 292) and ``RESC_MAX_SET_SIZE`` is 576, so the worst-case n² attention is
+~2.6·10⁵ entries — still cheap, and batches pad to the batch max, so the typical cost is set
+by the val median of 85. ISAB is deliberately absent: its inducing points would delete the
+full n×n term that IS the Axis-A contribution.
 
 Attention is hand-rolled rather than ``nn.MultiheadAttention`` for two concrete reasons:
 the Axis-A bias must be added **per head** to the pre-softmax logits, and padded query rows

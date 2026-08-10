@@ -1,10 +1,16 @@
 """[4.10] Cost record — params / GFLOPs / latency (do-not-drift #16, exit check 12).
 
-Encoder cost at ``(1, 1, 48, 48, 48)``; set-module cost at the **median (92)** and **max
-(253)** recorded set sizes; per-set rescoring latency (mean ± std over 50 timed forwards);
-per-volume crop-extraction latency. Appended next to the recorded Phase-3 detector cost
-([P3U3.5]: 6.688 s/vol detector + 0.364 s/vol linking + 0.019 s/vol aggregation,
-36.34 M params / 22.64 GFLOPs) so the Phase-5 cost table reads end to end.
+Encoder cost at ``(1, 1, 48, 48, 48)``; set-module cost at the PROMOTED pool's val **median
+(85)**, val **max (292)** and overall **max (509)** set sizes (``cost.COSTED_SET_SIZES``);
+per-set rescoring latency (mean ± std over 50 timed forwards); per-volume crop-extraction
+latency. Appended next to the recorded Phase-3 detector cost ([P3U3.5]: 6.688 s/vol detector
++ 0.364 s/vol linking + 0.019 s/vol aggregation, 36.34 M params / 22.64 GFLOPs) so the
+Phase-5 cost table reads end to end.
+
+⚠ ``[F.11e]`` re-measured the detector at **16.7 s/vol** on the promoted arm and flagged it
+as **machine-load noise, to be re-measured for the Phase-5 cost table**. The 6.688 s/vol
+figure above is the [P3U3.5] measurement and is the one to quote until then; the
+architecture is unchanged, so params/GFLOPs do not move either way.
 
 Usage:
     python scripts/phase4_cost.py --seed 0 --device cuda --out-root ...
@@ -19,8 +25,8 @@ import numpy as np
 
 from abus_jcr import conventions as C
 from abus_jcr.cache import open_vol
-from abus_jcr.rescore.cost import (MAX_SET_SIZE, MEDIAN_SET_SIZE, crop_extraction_cost,
-                                   encoder_cost, setmodule_cost, write_cost)
+from abus_jcr.rescore.cost import (COSTED_SET_SIZES, crop_extraction_cost, encoder_cost,
+                                   setmodule_cost, write_cost)
 from abus_jcr.rescore.encoder import build_encoder
 from abus_jcr.rescore.setmodel import build_rescorer
 
@@ -75,7 +81,7 @@ def main() -> int:
           f"s/vol ({crop_rec['ms_per_candidate']:.2f} ms/candidate)")
 
     payload = {"seed": args.seed, "capacity": list(capacity), "d_in": d_in,
-               "set_sizes_costed": [MEDIAN_SET_SIZE, MAX_SET_SIZE],
+               "set_sizes_costed": list(COSTED_SET_SIZES),
                "encoder": enc_rec, "set_modules": set_rec,
                "crop_extraction": crop_rec,
                "reference_set_params": set_module_params(d_in, capacity)}

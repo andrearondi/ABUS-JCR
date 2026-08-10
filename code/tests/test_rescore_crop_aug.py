@@ -95,8 +95,17 @@ def test_augmentation_is_reproducible_under_a_seeded_rng():
 
 def test_augment_params_reports_exactly_the_two_sanctioned_ops():
     p = crop_aug.augment_params()
-    assert set(p) == {"hflip_d1_p", "centre_jitter_frac"}
-    assert p["hflip_d1_p"] == C.RESC_ENC_AUG["hflip_d1_p"]
+    assert set(p) == {"mirror_lateral_p", "centre_jitter_frac"}
+    assert p["mirror_lateral_p"] == C.RESC_ENC_AUG["mirror_lateral_p"]
+
+
+def test_no_knob_is_named_after_the_forbidden_axis():
+    """The Inv.-13 defect was caused by a name that lied about its axis, and the old key
+    ``hflip_d1_p`` named the one axis this module must never mirror. Renamed 2026-08-09; this
+    pins the name so it cannot drift back."""
+    assert "hflip_d1_p" not in C.RESC_ENC_AUG
+    assert not any("d1" in k for k in C.RESC_ENC_AUG)
+    assert not any("d1" in k for k in crop_aug.augment_params())
 
 
 def test_disabled_augmentation_is_the_identity_path():

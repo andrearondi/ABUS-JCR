@@ -9,7 +9,8 @@ that has to be *shown*, not asserted.
 
 Measured here:
 * encoder params/GFLOPs at ``(1, 1, 48, 48, 48)``;
-* set-module params/GFLOPs at the **median (92)** and **max (253)** recorded set sizes;
+* set-module params/GFLOPs at three PROMOTED-pool set sizes — the val **median (85)**, the
+  val **max (292)** and the overall **max (509**, train fold0 vol14), see ``COSTED_SET_SIZES``;
 * per-set rescoring latency (mean ± std over 50 timed forwards);
 * per-volume crop-extraction latency (the CPU cost of re-extracting a set's crops).
 
@@ -30,12 +31,19 @@ import numpy as np
 from .. import conventions as C
 from ..detect.cost import count_params
 
-__all__ = ["MEDIAN_SET_SIZE", "MAX_SET_SIZE", "encoder_cost", "setmodule_cost",
-           "crop_extraction_cost", "write_cost"]
+__all__ = ["MEDIAN_SET_SIZE", "MAX_SET_SIZE", "MAX_TRAIN_SET_SIZE", "COSTED_SET_SIZES",
+           "encoder_cost", "setmodule_cost", "crop_extraction_cost", "write_cost"]
 
-#: Recorded val-pool set sizes ([P3U2.10] / spec §Context): median 92, max 253.
-MEDIAN_SET_SIZE = 92
-MAX_SET_SIZE = 253
+#: PROMOTED-pool set sizes (updated 2026-08-09; were 92 / 253 from the ARCHIVED pool).
+#: Val median 85.0 and val max 292 come from ``[F.9]`` §4 / ``[F.7]``'s per-volume log;
+#: the overall max is **train fold0 vol14 at 509**, which the set module sees during
+#: training, so it is costed too — the archived pool never had a set that large.
+MEDIAN_SET_SIZE = 85          # val, the size the deployed rescorer meets most often
+MAX_SET_SIZE = 292            # val, the worst single evaluation set
+MAX_TRAIN_SET_SIZE = 509      # train fold0 vol14 — the worst set anywhere in either pool
+
+#: What ``setmodule_cost`` times by default: typical, worst-at-inference, worst-anywhere.
+COSTED_SET_SIZES = (MEDIAN_SET_SIZE, MAX_SET_SIZE, MAX_TRAIN_SET_SIZE)
 
 
 def _gflops(model, make_inputs) -> Dict:
@@ -92,9 +100,10 @@ def encoder_cost(encoder, device: str = "cuda", k: int = 50, batch: int = 1) -> 
     return rec
 
 
-def setmodule_cost(model, d_in: int, set_sizes: Sequence[int] = (MEDIAN_SET_SIZE, MAX_SET_SIZE),
+def setmodule_cost(model, d_in: int, set_sizes: Sequence[int] = COSTED_SET_SIZES,
                    device: str = "cuda", k: int = 50, use_geometry: bool = False) -> Dict:
-    """Params + per-set GFLOPs/latency at the median and max recorded set sizes."""
+    """Params + per-set GFLOPs/latency at the promoted pool's median / max / worst-anywhere
+    set sizes (:data:`COSTED_SET_SIZES`)."""
     import torch
 
     model = model.to(device).eval()

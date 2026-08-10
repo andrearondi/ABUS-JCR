@@ -2,7 +2,7 @@
 
 Two ops, both ABUS-physics-safe:
 
-* **mirror flip along the LATERAL axis** = ``d0`` with p = ``RESC_ENC_AUG["hflip_d1_p"]``
+* **mirror flip along the LATERAL axis** = ``d0`` with p = ``RESC_ENC_AUG["mirror_lateral_p"]``
   — the breast is approximately left–right symmetric.
 * **centre jitter**, uniform in ``±centre_jitter_frac × side`` per axis, applied to ``cen``
   **before sampling** (so it is a genuine re-extraction, not a shift of an existing crop).
@@ -60,10 +60,11 @@ FLIP_AXIS = 0  # d0 = lateral; d1 = depth/beam (NEVER flip); d2 = sweep (NEVER f
 def augment_params() -> Dict[str, float]:
     """The two sanctioned knobs, read from :mod:`conventions` at call time.
 
-    The key ``hflip_d1_p`` keeps its historical name so no recorded config changes; it means
-    "probability of the **lateral** mirror flip" and has done since the 2026-08-04 correction.
+    ``mirror_lateral_p`` = probability of the **lateral** (``d0``) mirror. RENAMED 2026-08-09
+    from ``hflip_d1_p``, which named the one axis this module must never touch; no recorded
+    config changed, because no Phase-4 run had produced one.
     """
-    return {"hflip_d1_p": float(C.RESC_ENC_AUG["hflip_d1_p"]),
+    return {"mirror_lateral_p": float(C.RESC_ENC_AUG["mirror_lateral_p"]),
             "centre_jitter_frac": float(C.RESC_ENC_AUG["centre_jitter_frac"])}
 
 
@@ -83,7 +84,7 @@ def maybe_flip_lateral(crop: np.ndarray, rng: np.random.Generator,
 
     Never touches **d1** (depth/beam — Inv. 13's red line) or d2 (sweep).
     """
-    p = augment_params()["hflip_d1_p"] if p is None else float(p)
+    p = augment_params()["mirror_lateral_p"] if p is None else float(p)
     if p <= 0.0 or rng.random() >= p:
         return crop
     return np.flip(crop, axis=FLIP_AXIS).copy()

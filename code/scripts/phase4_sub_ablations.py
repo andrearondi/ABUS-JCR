@@ -1,14 +1,15 @@
 """[4.8] Sub-ablations on FULL + the λ = 0 pure-ranking diagnostics.
 
 **Token-block on/off** (on FULL, at its selected λ, 3 seeds each): ``rank``, ``score_stats``,
-``tube_geom``. The tube-geom block is the [P3U2 3.D] pair — ``area_cv`` (Cliff's δ 0.491)
-carries signal while ``centroid_jitter`` (δ −0.132) is near-dead, so this ablation reports
-whether the block earns its place rather than assuming it does.
+``tube_geom``. The tube-geom block is the split pair — on the promoted val pool ``area_cv``
+carries signal (Cliff's δ **0.474**) while ``centroid_jitter`` is near-dead and
+wrong-signed (δ **−0.292**) — so this ablation reports whether the block earns its place
+rather than assuming it does.
 
-**λ = 0 diagnostics** on A2 and FULL: the pure-per-volume-ranking endpoint. The [P3U2.12]
-calibration analysis PREDICTS it loses to B2 (smooth-AP is invariant to a per-set constant,
-and cross-volume calibration is 77.6 % of the headroom). Reported whichever way it lands,
-and **excluded from the selection budget**.
+**λ = 0 diagnostics** on A2 and FULL: the pure-per-volume-ranking endpoint. The calibration
+analysis PREDICTS it loses to B2 (smooth-AP is invariant to a per-set constant, and
+cross-volume calibration is **78.7 %** of the headroom on the promoted pool, [F.8]).
+Reported whichever way it lands, and **excluded from the selection budget**.
 
 This is a driver over ``phase4_train_variant.py``, so the schedule, the trial budget and the
 selection rule are literally the same code as the main grid.

@@ -1,14 +1,32 @@
 """[4.3] Pretrain the shared 3D encoder + B1Head per seed — **this run IS rung B1**.
 
 Trains ``CandidateEncoder + B1Head`` end to end on the **train** pool only (Inv. 10), with
-crop augmentation (d1 flip + centre jitter, Inv. 13) applied by re-extracting from the iso
-cache. Every epoch is saved; the deployed epoch is chosen **post-hoc on val CPM** through the
-official oracle on the PAIRED seed pool ``full_seed{r}`` (Inv. 14) — never on val loss.
+crop augmentation applied by re-extracting from the iso cache: a mirror along **d0 = the
+MEASURED LATERAL axis**, plus centre jitter. **Never d1 (depth/beam)** — Inv. 13. Every epoch
+is saved; the deployed epoch is chosen **post-hoc on val CPM** through the official oracle on
+the PAIRED seed pool ``full_seed{r}`` (Inv. 14) — never on val loss.
 
-Exit check 4 is evaluated here: **B1 val CPM (mean over 3 replicas) must exceed B0 = 0.5567.**
-A B1 at or below the floor means the encoder/token/crop pipeline is broken, not that
-rescoring fails — stop and diagnose, then consider the pre-registered
-``--encoder small_cnn_3d`` fallback (spec Open escalation #2).
+An **early read** on exit check 4 is printed here: this seed's B1 val CPM against **this
+seed's B0**, which is MEASURED on the pool being held (the same record ranked by
+``score_max``), never read from a constant — a hard-coded floor survives a substrate
+promotion while its meaning does not. The BINDING exit check is on the [4.6] B1's mean over
+the 3 replicas, at [4.7].
+
+If B1 lands at or below B0 there are **two** live explanations and they need different
+remedies, so do not jump to the fallback:
+
+1. the encoder/token/crop pipeline is broken — then the per-candidate discrimination will be
+   far below the pool's measured single-feature ceiling (balanced accuracy **0.811** on the
+   promoted val pool, ``[F.9]`` §1), and ``--encoder small_cnn_3d`` (spec Open escalation #2)
+   is the pre-registered response;
+2. B0 is simply a strong ranking on this substrate — the promoted detector's ``score_max``
+   separates TP/FP at Cliff's δ **0.713** (was 0.600) and already carries **39.8 %** of the
+   volume-trust signal (was 18.8 %, ``[F.8]``). A per-candidate classifier with no volume
+   context can legitimately fail to beat it, which is a finding about B0, not a broken
+   pipeline, and it makes B2−B1 *more* interesting rather than less.
+
+The printed line reports B1's balanced accuracy alongside the CPM so the two can be told
+apart at a glance.
 
 Usage:
     python scripts/phase4_pretrain_encoder.py --seed 0 --device cuda \\
@@ -26,6 +44,7 @@ from abus_jcr import conventions as C
 from abus_jcr.rescore.crops import open_crop_cache
 from abus_jcr.rescore.datasets import CropDataset
 from abus_jcr.rescore.encoder import build_encoder
+from abus_jcr.probe.pool_diag import best_balacc
 from abus_jcr.rescore.evaluate import evaluate_variant
 from abus_jcr.rescore.setmodel import B1Rescorer
 from abus_jcr.rescore.train import pretrain_encoder
@@ -60,6 +79,13 @@ def main() -> int:
     rec_va_all = load_record(args, "val")
     rec_va = val_pool_for_seed(rec_va_all, args.seed)
     gt_va = gt_for_pool(load_gt(args, "val"), rec_va)
+
+    # B0 for THIS seed, measured on the pool actually held (one oracle call). Never a
+    # constant: see conventions.py 4 (H). This is also the Inv.-8 ceiling for every epoch.
+    b0 = evaluate_variant(rec_va, rec_va["score_max"].to_numpy(float), gt_va,
+                          seed_tag=f"B0_seed{args.seed}", n_boot=0)
+    print(f"# B0 (this seed, measured): CPM {b0['cpm']:.4f}, ceiling {b0['ceiling']:.4f} "
+          f"-- the floor B1 must clear, and the cap no rung can exceed (Inv. 8)")
     iso_tr = iso_shape_map(args, rec_tr)
     iso_va = iso_shape_map(args, rec_va)
 
@@ -111,8 +137,14 @@ def main() -> int:
             prob = torch.sigmoid(logits).clamp(0.0, 1.0 - C.RESC_PROB_EPS).cpu().numpy()
         res = evaluate_variant(rec_va, prob, gt_va, seed_tag=f"B1_seed{args.seed}",
                                n_boot=args.n_boot)
+        # Per-candidate discrimination, alongside the ranking metric. If B1 fails to clear B0
+        # this is what distinguishes "the pipeline is broken" (balacc far below the pool's
+        # measured single-feature ceiling of 0.811, [F.9] §1) from "B0 is simply strong".
+        lab = rec_va["label"].to_numpy()
+        ba, _thr = best_balacc(prob[lab == "pos"], prob[lab == "neg"])
         return {"val_cpm": res["cpm"], "val_ceiling": res["ceiling"],
-                "val_ci_lo": res["ci"]["lo"], "val_ci_hi": res["ci"]["hi"]}
+                "val_ci_lo": res["ci"]["lo"], "val_ci_hi": res["ci"]["hi"],
+                "val_balacc": float(ba)}
 
     out_dir = encoder_dir(args, args.seed)
     result = pretrain_encoder(enc, head, loader, evaluate_epoch, out_dir, seed=args.seed,
@@ -123,9 +155,19 @@ def main() -> int:
     print(f"\n# [4.3] seed {args.seed}: selected epoch {result['selected_epoch']} "
           f"(val CPM {best['val_cpm']:.4f}, CI [{best['val_ci_lo']:.4f}, {best['val_ci_hi']:.4f}], "
           f"ceiling {best['val_ceiling']:.4f})")
-    print(f"# EXIT CHECK 4 (this seed): B1 val CPM {best['val_cpm']:.4f} vs B0 {C.RESC_B0_CPM} "
-          f"-> {'PASS' if best['val_cpm'] > C.RESC_B0_CPM else 'FAIL — diagnose the pipeline'}")
-    print("#   (the exit check is on the MEAN over the 3 replicas; run all seeds before deciding)")
+    passed = best["val_cpm"] > b0["cpm"]
+    print(f"# EXIT CHECK 4 (early read, this seed): B1 val CPM {best['val_cpm']:.4f} vs "
+          f"MEASURED B0 {b0['cpm']:.4f} -> {'PASS' if passed else 'BELOW B0'}")
+    print(f"#   B1 per-candidate balanced accuracy = {best['val_balacc']:.3f} "
+          f"(pool single-feature ceiling on the promoted val pool: 0.811, [F.9] §1)")
+    if not passed:
+        print("#   TWO explanations, different remedies — do NOT jump to the fallback:")
+        print("#     (a) balacc well below ~0.81 => the encoder/token/crop pipeline is broken; "
+              "the pre-registered response is --encoder small_cnn_3d (spec Open escalation #2);")
+        print("#     (b) balacc at/near ~0.81 => B0 is simply a strong ranking on this substrate "
+              "(score_max delta 0.713, 39.8% of the volume-trust signal, [F.8]/[F.9]). That is a "
+              "finding about B0, not a broken pipeline.")
+    print("#   (the BINDING exit check is on the [4.6] B1's MEAN over the 3 replicas, at [4.7])")
 
     dump_json({"seed": args.seed, "encoder": args.encoder, "d_in": d_in,
                "rest_blocks": list(rest), "rest_names": names,

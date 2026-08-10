@@ -2,7 +2,7 @@
 
 | id | attention | geometry bias | ``w_rank`` | λ | isolates |
 |---|---|---|---|---|---|
-| **B0**   | —                        | — | — | — | the Phase-3 floor: pool ranked by ``score_max`` (recorded 0.5567 ± 0.0109) |
+| **B0**   | —                        | — | — | — | the Phase-3 floor: pool ranked by ``score_max`` (MEASURED at [4.7], never a constant — 0.6327 ± 0.0526 on the promoted pool, [F.8]) |
 | **B1**   | none (per-candidate MLP) | — | 0 | 1 | does *any* rescoring help |
 | **B2**   | SAB, appearance-only     | ✗ | 0 | 1 | **jointness** (B2 vs B1) |
 | **A1**   | SAB                      | ✓ | 0 | 1 | **geometry** (A1 vs B2) |

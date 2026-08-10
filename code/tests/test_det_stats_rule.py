@@ -38,6 +38,28 @@ def test_input_size_from_frame_maxima():
     assert d["max_size"] == 352
 
 
+def test_input_size_is_short_side_then_long_side_not_d0_then_d1():
+    """[2026-08-09] ``min_size`` is torchvision's target for the SHORT side and ``max_size``
+    the cap on the LONG one, so the rule must read min/max of the two frame maxima — not
+    ``d0 -> min_size, d1 -> max_size`` literally, which silently assumed ``d0`` is shorter.
+
+    That assumption holds on the legacy cache (158 vs 341) and this is exactly the case
+    above. It inverts on the isotropic cache, where the same volumes are 432 x 124: the
+    literal rule would emit ``min_size=448 > max_size=128``. Swapping the two inputs must
+    therefore leave the answer unchanged.
+    """
+    stats = _wide_skewed_stats()
+    swapped = dict(stats, frame_d0_max=stats["frame_d1_max"], frame_d1_max=stats["frame_d0_max"])
+    d = DS.derive_constants(swapped, rule=C.DET_RULE)
+    assert (d["min_size"], d["max_size"]) == (160, 352)
+    assert d["min_size"] <= d["max_size"]
+
+    # the isotropic-profile shape, from the real Train maxima (432 x 124)
+    iso = dict(stats, frame_d0_max=432, frame_d1_max=124)
+    d_iso = DS.derive_constants(iso, rule=C.DET_RULE)
+    assert (d_iso["min_size"], d_iso["max_size"]) == (128, 448)
+
+
 def test_normalisation_passthrough():
     d = DS.derive_constants(_wide_skewed_stats(), rule=C.DET_RULE)
     assert d["image_mean"] == 0.23

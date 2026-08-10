@@ -28,15 +28,34 @@ from .. import conventions as C
 
 
 def _anisotropy(df: pd.DataFrame) -> np.ndarray:
-    """``ext_d0 / mean(ext_d1, ext_d2)`` per candidate (d0 = depth/beam)."""
+    """``ext_d0 / mean(ext_d1, ext_d2)`` per candidate.
+
+    NAME AND AXIS, corrected 2026-08-09 (values unchanged, and every recorded number stands):
+    ``d0`` is the MEASURED **lateral** axis, not depth/beam (``results/AXIS_CHECK.md``,
+    129/130 volumes), so this is **lateral** elongation — in a cache whose in-plane aspect is
+    off by ≈7.5× (Inv. 6 amendment), where a physically cubic candidate reads ≈0.195, not 1.0.
+    The near-null effect sizes this probe reports are therefore about the wrong axis and do
+    NOT show that depth-elongated candidates are absent. ``[I.6b]`` tested the true beam axis
+    directly: ``|δ| ≈ 0.27`` in 7/8 detectors, but **zero** candidates above 2× beam
+    elongation in any detector or split — there is no ray-shaped population, and the δ is
+    ordinary lesion morphology (breast masses are wider-than-tall). Kept under its historical
+    name because it is a frozen record column; see ``conventions.FP_PROBE_ANISO_DEPTH_AXIS``.
+
+    **Axis now read from the constant, 2026-08-09.** The numerator axis was hard-coded to
+    ``d0``; it is ``conventions.FP_PROBE_ANISO_DEPTH_AXIS``, which is **0 on the ``legacy``
+    profile** — so every recorded number reproduces byte-for-byte — and **1 on ``measured``**,
+    where ``d1`` is the beam axis *and* the cache is genuinely 0.4 mm cubed, so the ratio is a
+    true physical elongation about the beam for the first time. The two profiles' values are
+    not comparable: on ``legacy`` a physically cubic candidate reads ≈0.195, on ``measured`` 1.0.
+    """
     if len(df) == 0:
         return np.zeros(0)
-    e0 = df["ext_d0"].to_numpy(dtype=float)
-    e1 = df["ext_d1"].to_numpy(dtype=float)
-    e2 = df["ext_d2"].to_numpy(dtype=float)
-    denom = (e1 + e2) / 2.0
+    ext = [df[f"ext_d{a}"].to_numpy(dtype=float) for a in range(3)]
+    a = int(C.FP_PROBE_ANISO_DEPTH_AXIS)
+    others = [ext[k] for k in range(3) if k != a]
+    denom = (others[0] + others[1]) / 2.0
     denom = np.where(denom <= 0, np.nan, denom)
-    return e0 / denom
+    return ext[a] / denom
 
 
 def _centroids(df: pd.DataFrame) -> np.ndarray:

@@ -17,6 +17,39 @@ centre + full extent**.
 
 from __future__ import annotations
 
+import os
+
+# ============================================================================
+# AXIS PROFILE — which spacing map the cache is built with (added 2026-08-09)
+# ----------------------------------------------------------------------------
+# Two substrates coexist in this repo. Selected ONCE per process by the
+# environment variable ``ABUS_AXIS_PROFILE``; there is no CLI flag, on purpose —
+# a constant that names a substrate must not be settable per-script.
+#
+#   "legacy"   (DEFAULT) — the DEPLOYED arm. `SPACING_STORAGE_MM` keeps the
+#              inverted in-plane roles, so `preprocess_hash` stays
+#              ab1fdf28... and every recorded number reproduces byte-for-byte.
+#              Nothing about this profile changed when the profile switch was
+#              introduced; it is the file as it stood, unmodified.
+#   "measured" — the ISOTROPIC-CACHE branch (`iso/RB_ISO_REBUILD.md`). The
+#              spacing map is the one measured on 129/130 volumes
+#              (results/AXIS_CHECK.md), so the cache really is 0.4 mm cubed.
+#              A DIFFERENT `preprocess_hash` ⇒ a different cache directory ⇒
+#              `cache.assert_hash` refuses to read one profile's cache under the
+#              other. That guard is what makes a forgotten `export` fail loudly
+#              on the first cache read instead of silently training on the wrong
+#              substrate.
+#
+# Every value this profile changes is collected in ONE block at the END of this
+# file, so the deployed values below stay where they have always been, with
+# their original provenance comments intact and auditable.
+AXIS_PROFILE = os.environ.get("ABUS_AXIS_PROFILE", "legacy").strip().lower()
+if AXIS_PROFILE not in ("legacy", "measured"):
+    raise RuntimeError(
+        f"ABUS_AXIS_PROFILE={AXIS_PROFILE!r} is not a known axis profile; "
+        "use 'legacy' (deployed) or 'measured' (isotropic rebuild)."
+    )
+
 # --- axis permutation -------------------------------------------------------
 # storage axis (d0, d1, d2) -> ITK (x, y, z). Self-inverse: applying it twice
 # is the identity, so the same tuple maps official -> storage as well.
@@ -88,6 +121,19 @@ LESION_MIN_VOXELS = 1000
 SLICE_AXIS = 2
 IN_PLANE_ROW_AXIS = 0  # DECLARED "d0 = depth/beam"; MEASURED d0 = lateral
 IN_PLANE_COL_AXIS = 1  # DECLARED "d1 = lateral";    MEASURED d1 = depth/beam
+
+# The PHYSICAL axis roles. These are facts about the scanner, not about the cache,
+# so they are the SAME under both axis profiles — measured four independent ways on
+# 129/130 volumes (results/AXIS_CHECK.md). Under the "legacy" profile they are
+# deliberately INCONSISTENT with SPACING_STORAGE_MM above: that inconsistency IS the
+# defect, and encoding the falsehood instead would hide it. Read these when you need
+# to know which axis is depth; read SPACING_STORAGE_MM when you need to know what the
+# cache was actually built with. (`FP_PROBE_ANISO_DEPTH_AXIS` below is a separate,
+# profile-dependent constant whose only job on "legacy" is byte-reproduction of the
+# recorded probe outputs — it is NOT the physical answer.)
+DEPTH_AXIS   = 1  # d1 = depth/beam (0.073 mm native): skin at index ~0, shadows +d1
+LATERAL_AXIS = 0  # d0 = lateral    (0.200 mm native): the ~L-R symmetry axis
+SWEEP_AXIS   = 2  # d2 = elevational sweep (0.475674 mm native) == SLICE_AXIS
 
 # *** THE CACHE IS NOT ACTUALLY ISOTROPIC. MEASURED 2026-08-02. *** `preprocess.zoom_factors`
 # scales axis a by SPACING_STORAGE_MM[a] / ISO_SPACING_MM, so with the wrong spacing map above
@@ -406,13 +452,19 @@ RESC_D_APP           = 128   # appearance embedding width after GAP + linear
 RESC_ENC_EPOCHS      = 30    # fixed annealed budget, save every epoch, post-hoc selection
 RESC_ENC_BATCH       = 32
 RESC_ENC_OPT         = {"name": "AdamW", "lr": 1e-4, "weight_decay": 0.05}
-                       # NOTE the key name `hflip_d1_p` is HISTORICAL and is kept only so no recorded
-                       # config changes. It means "p of the mirror flip", and since the 2026-08-04 fix
-                       # that flip acts on `d0` = the MEASURED LATERAL axis (rescore/crop_aug.FLIP_AXIS
-                       # = 0). There is deliberately NO flip along d1 (depth/beam) — Inv. 13.
-RESC_ENC_AUG         = {"hflip_d1_p": 0.5, "centre_jitter_frac": 0.10}
+                       # `mirror_lateral_p` = p of the ONLY permitted mirror, along `d0` = the
+                       # MEASURED LATERAL axis (rescore/crop_aug.FLIP_AXIS = 0). There is
+                       # deliberately NO flip along d1 (depth/beam) — Inv. 13.
+                       # RENAMED 2026-08-09 from `hflip_d1_p`, which named the axis it must never
+                       # touch. No recorded config changes, because no Phase-4 run has produced one
+                       # ([4.1] onward were empty when this was renamed) — and HISTORY.md §8's own
+                       # lesson is that routing a flip through a name that lies about its axis is
+                       # exactly what caused the Inv.-13 defect. Free to fix now; not later.
+RESC_ENC_AUG         = {"mirror_lateral_p": 0.5, "centre_jitter_frac": 0.10}
 # Pre-registered FALLBACK encoder (spec Open escalation #2). NOT deployed. Fires only if exit
-# check 4 fails (B1 val CPM <= B0 0.5567): swap to a 4-block ~1M-param 3D CNN and re-run [4.3].
+# check 4 fails (B1 val CPM <= the MEASURED B0 of the deployed pool): swap to a 4-block
+# ~1M-param 3D CNN and re-run [4.3]. The floor is measured at run time, never hard-coded — see
+# the 4 (H) note below.
 RESC_ENCODER_FALLBACK = "small_cnn_3d"
 RESC_SMALL_CNN_WIDTHS = (16, 32, 64, 128)
 # --- 4 (C): the per-candidate token (§1.2) ----------------------------------
@@ -424,9 +476,17 @@ RESC_SET_DROPOUT     = 0.1
 RESC_SET_EPOCHS      = 60
 RESC_SET_BATCH_SETS  = 8     # sets per step, padded + masked
 RESC_SET_OPT         = {"name": "AdamW", "lr": 1e-3, "weight_decay": 0.01}
-RESC_MAX_SET_SIZE    = 320   # hard pad width. Largest RECORDED set = 253 (seed0 post-floor tube
-                             # stats, [P3U2.10]); the per-seed maxima are not all recorded, so [4.1]
-                             # ASSERTS the true max over both pools and fails loudly if it exceeds.
+RESC_MAX_SET_SIZE    = 576   # CAP on the largest set, asserted at [4.1]. RAISED 320 -> 576 on
+                             # 2026-08-09: on the PROMOTED pool the worst single set is train
+                             # fold0 vol14 at **509** candidates (then 355/321/292/255) and val's
+                             # worst is **292** ([F.7]; RESULTS_PHASE_4 pre-registration). 320 was
+                             # sized for the ARCHIVED pool's max of 253 ([P3U2.10]) and would have
+                             # failed [4.1] on the first run. NOT a memory knob: batches pad to the
+                             # BATCH max, so this constant only forbids a pool the pipeline was
+                             # never sized for. `RESCORER_POOL_BUDGET` (200) constrains the MEAN
+                             # pool, not the max — the two are different quantities
+                             # (AUGMENTATION_NOTES §14.6). 509^2 ~ 259k attention entries is
+                             # trivial for the set module; do NOT re-tune anything for it.
 RESC_NEG_POS_RATIO   = None  # NO negative subsampling: train sets == eval sets exactly, and the
                              # listwise loss is imbalance-robust to >=1:10 000 (RS-loss, ICCV'21
                              # Tab. S7). If Phase 6 ever needs it, the SAME ratio for all detectors.
@@ -447,11 +507,149 @@ RESC_LAMBDA_DIAGNOSTIC = 0.0        # pure-ranking endpoint: REPORTED, excluded 
 RESC_SEEDS           = (0, 1, 2)    # rescorer seed r is PAIRED with detector full_seed{r}
 RESC_SELECT_METRIC   = "val_cpm"    # official average_recall; NEVER val loss
 RESC_SELECT_CPM_TOL  = 0.02         # within this of the max = a tie on 30 val lesions -> earliest epoch
+                                    # DELIBERATELY NOT the detector's DET_SELECT_CPM_TOL (0.10). The
+                                    # Inv. 2 / A1-tau amendment raised THAT constant to buy recall
+                                    # CEILING, which is unrecoverable downstream (Inv. 8). Here there
+                                    # is no ceiling to buy: by Inv. 8 every rung and every epoch
+                                    # re-ranks one frozen pool, so max_recall is identical throughout
+                                    # and the ceiling tie-break is a no-op. tau stays at the noise
+                                    # width it was calibrated as (~1/30 of the val lesions).
 RESC_PROB_EPS        = 1e-6         # clamp sigmoid to [0, 1-eps) for the det_score sweep
-# --- 4 (H): the recorded Phase-3 floor this phase must beat (read-only) -----
-# [P3U2.12] B0 = the frozen pool ranked by score_max. Used by the exit gates, never as a target
-# to tune toward. Recall ceiling is rung-invariant by Inv. 8.
-RESC_B0_CPM          = 0.5567
-RESC_B0_CPM_STD      = 0.0109
-RESC_RECALL_CEILING  = 0.8667
-RESC_RECALL_CEILING_STD = 0.0471
+# --- 4 (H): the Phase-3 floor this phase must beat -- MEASURED, never hard-coded ------------
+# There is deliberately NO `RESC_B0_CPM` / `RESC_RECALL_CEILING` constant here.
+#
+# There were, until 2026-08-09, and they were WRONG: they held 0.5567 / 0.8667, the ARCHIVED
+# (d1-flip) arm's values, while the promoted arm's B0' is 0.6327 +- 0.0526 at ceiling 0.8556
+# ([F.8]). `phase4_eval_grid.py` gated exit check 4 on that constant, so a B1 landing at 0.59
+# would have PASSED a gate while sitting 0.04 BELOW the baseline it exists to beat -- the gate
+# was not merely stale, it was inverted in effect. RESULTS_FOLD_FLIP's stale-number sweep caught
+# the same defect in RB_PHASE_4.md's prose and missed it here.
+#
+# The fix is structural, not a new number: B0 is the frozen pool ranked by `score_max`, so every
+# script that needs it MEASURES it on the pool it is actually holding (one oracle call), exactly
+# as the ceiling is already read per seed from `max_recall`. A constant that names a substrate is
+# the same class of bug as a detection-cache key that names a run (HISTORY.md §8) -- when the
+# substrate is promoted, the name survives and the meaning does not.
+
+
+# ============================================================================
+# ============================================================================
+# "measured" AXIS-PROFILE OVERRIDES — the isotropic-cache branch
+# ----------------------------------------------------------------------------
+# EVERYTHING above this line is the DEPLOYED ("legacy") arm, unchanged. Nothing
+# below executes unless ABUS_AXIS_PROFILE=measured. Runbook: iso/RB_ISO_REBUILD.md.
+#
+# Two classes of value live here, and they must not be confused:
+#
+#   (1) MEASURED FACTS — settled before the branch starts, not re-derivable by a
+#       gate:  SPACING_STORAGE_MM, FP_PROBE_ANISO_DEPTH_AXIS.
+#   (2) PROVISIONAL PLACEHOLDERS — every data-dependent constant, carrying the
+#       arithmetic prediction of what the corresponding gate should print. They
+#       follow the SAME contract Phase 2 (B) has always used: written provisional,
+#       reconciled against the probe BEFORE any training run, and the change
+#       recorded in iso/RESULTS_ISO_REBUILD.md. A gate that reads GATE PASS on a
+#       placeholder is a coincidence to be recorded, never an assumption.
+#
+# The two profiles are NOT comparable constant-for-constant. One iso voxel means
+# 1.0959 x 0.1460 x 0.4000 mm under "legacy" and 0.4 mm cubed under "measured", so
+# any constant denominated in iso voxels (crop sides, drift caps, merge gap,
+# cluster radius) changes meaning even where the number is unchanged.
+# ============================================================================
+if AXIS_PROFILE == "measured":
+
+    # --- (1) MEASURED FACTS -------------------------------------------------
+    # results/AXIS_CHECK.md + RESULTS_INTENSITY_PROBE.md [I.3]: attenuation
+    # (Spearman -0.938, peak at 2% of the axis, 129/130 volumes), the physical-
+    # extent envelope (exactly 1 of 6 permutations survives), sample-count
+    # structure, direct visual, and the GE Invenia hardware numbers
+    # (768 elements x 0.20 mm ~ the quoted 15.3 cm aperture).
+    #   d0 = LATERAL 0.200 | d1 = DEPTH/BEAM 0.073 | d2 = SWEEP 0.475674
+    # Feeds preprocess_hash => a DIFFERENT cache dir from the deployed ab1fdf28...
+    SPACING_STORAGE_MM = (0.200, 0.073, 0.475674)
+    # => zoom factors at 0.4 mm: (0.500000, 0.182500, 1.189185)
+    #    a 865 x 682 x 353 volume caches as 432 x 124 x 420 (vs 158 x 341 x 420),
+    #    i.e. the SAME voxel budget with 2.7x finer LATERAL resolution.
+
+    # Now the true beam axis, so `anisotropy` finally measures what its name says.
+    # On "legacy" this stays 0 purely so every recorded probe number reproduces.
+    FP_PROBE_ANISO_DEPTH_AXIS = DEPTH_AXIS   # = 1
+
+    # --- (2) PROVISIONAL — Phase 2 (B), reconciled at the [I2.1] HARD GATE ---
+    # Frame maxima invert: d0 865 -> 432 (was the SHORT side, becomes the long one)
+    # and d1 {546,608,682} -> {100,111,124}. See the derive_constants axis-role fix
+    # (detect/det_stats.py): min_size is the SHORT side, max_size the long one --
+    # backward-compatible on "legacy", where it reproduces 160 / 352 exactly.
+    DET_MIN_SIZE  = 128    # predicted round_up(max Train iso SHORT side = 124, 32)
+    DET_MAX_SIZE  = 448    # predicted round_up(max Train iso LONG  side = 432, 32)
+    DET_IMAGE_MEAN = 0.23      # carried over; the resampling weights change slightly
+    DET_IMAGE_STD  = 0.1658    # -> both are re-measured by the probe, not assumed
+    DET_ANCHOR_BASE_SIZES    = (16, 32, 64, 128, 256)
+    # THE constant that most visibly encoded the distortion. Deployed is
+    # (0.2, 0.25, 0.33, 1.0) -- a 7.5x wide skew that is the in-plane aspect error,
+    # not lesion morphology. Undistorted, the SAME boxes give h/w p10/p50/p90
+    # ~ 1.22 / 1.85 / 3.04 (deployed 0.162/0.246/0.405 x 7.5065), which agrees with
+    # the independently measured GT box shape 1.89/0.63/0.76 and with "real breast
+    # masses are wider-than-tall" (HISTORY.md 5). Snapped to DET_RULE's grid:
+    DET_ANCHOR_ASPECT_RATIOS = (1.0, 1.5, 2.0)
+
+    # --- (2) PROVISIONAL — the Inv.-11 union-box merge distance --------------
+    # 8 iso px means 8.8 mm laterally / 1.17 mm in depth on the deployed cache and
+    # 3.2 mm isotropically here, so the label contract itself changes. Re-validated
+    # at [I1.5] on the criterion the original carried: fragments of one lesion merge,
+    # case 93's two genuine foci stay separate.
+    DET_LABEL_MERGE_GAP = 8
+
+    # --- (2) PROVISIONAL — Phase 3 (A) linker, re-frozen at [I3.2] (Inv. 4) --
+    # d2 = sweep is unchanged by the correction, so every z-denominated constant
+    # (LINK_MIN_TUBE_LEN, LINK_MAX_TUBE_ZSPAN, LINK_MAX_Z_GAP) is expected to
+    # re-derive UNCHANGED; the in-plane one is not.
+    LINK_IOU              = 0.30
+    LINK_MAX_Z_GAP        = 1
+    LINK_MIN_TUBE_LEN     = 8
+    LINK_MAX_TUBE_ZSPAN   = 182     # 1.8 x Train-GT z-extent p99 (101.11) -- z is unchanged
+    # Deployed 342 = 1.5 x an in-plane extent p99 of 228 iso px, which [P3U2.PD] already
+    # noticed is ">= the volume's full lateral width 341, i.e. laterally a no-op" -- a
+    # direct consequence of the p99 being dominated by the 7.5x-stretched depth axis
+    # (228 px x 0.146 mm ~ 33 mm of DEPTH). Undistorted the p99 is set by the lateral
+    # extent instead; prediction ~112 px -> cap ~168, i.e. the cap BINDS for the first
+    # time. Re-derived at [I3.2]; if it comes out a no-op again, say so.
+    LINK_MAX_CENTROID_DRIFT = 168
+    LINK_CONTAINMENT_THRESH = 1.0   # off, as deployed
+    LINK_3DNMS_IOU          = None  # off, as deployed (Phase-4 ablation only)
+    LINK_NMS_THRESH         = 0.70
+
+    # --- (2) PROVISIONAL — Phase 3 (B) operating point, re-derived at [I3.3] -
+    # These are properties of a DETECTOR's score distribution, and the detectors on
+    # this branch do not exist yet. Carried over only so the pipeline runs; both are
+    # re-derived, and the A2-repair rule (Inv. 2, adopted 2026-08-08) is what picks
+    # the op: among thresholds whose POST-FLOOR pool <= RESCORER_POOL_BUDGET,
+    # maximise linked val CPM; tie-break to higher ceiling, then smaller pool.
+    PREFILTER_SCORE_FLOOR = 0.08
+    LINK_OP_SCORE_THRESH  = 0.03
+    DET_SELECT_OP_THRESH  = 0.03
+
+    # --- DELIBERATELY NOT OVERRIDDEN (record the reason, do not "fix" these) --
+    # ISO_SPACING_MM (0.4)       : held fixed so the ONLY changed variable between the
+    #                              two substrates is the spacing MAP. Same voxel budget,
+    #                              same training cost. Re-justified, not inherited, by
+    #                              the [I1.4] fidelity read.
+    # DET_ASSIGNER ("atss")      : a recipe choice frozen by the [P3U.3] D0 gate, not a
+    #                              substrate constant. The gate is RE-RUN at [I2.2] for
+    #                              the record -- on undistorted boxes for the first time.
+    # DET_SELECT_CPM_TOL (0.10)  : Inv. 2 / A1-tau. A selection POLICY, identical across
+    #                              architectures and substrates by Inv. 2's own wording.
+    # TRAIN_AUGMENT flip axis (0): already the measured lateral axis. Correct in BOTH
+    #                              profiles, for different reasons (augment.py).
+    # RESCORER_POOL_BUDGET (200) : a Phase-4 O(n^2) budget, not a physical quantity.
+    # RESC_CROP_* (48/1.5/48/160): voxel counts. UNCHANGED numbers, but they stop being
+    #                              a 7.5:1 slab and become a physical cube -- 48 vox is
+    #                              19.2 mm on every axis here, against 52.6 x 7.0 x 19.2
+    #                              mm on the deployed cache. This is the single largest
+    #                              reason the rebuild reaches the CONTRIBUTION (Inv. 5)
+    #                              and not just the substrate under it.
+    # FP_PROBE_CLUSTER_RADIUS(10): 10 iso vox is an 11.0 x 1.5 x 4.0 mm ELLIPSOID on the
+    #                              deployed cache and a 4 mm SPHERE here. The FP-cluster
+    #                              count (14.0/vol vs 1.0 for TP) is the primary evidence
+    #                              for the STRONG jointness prior and WILL move. That is
+    #                              the measurement, not a regression -- the two profiles'
+    #                              cluster counts are not comparable by construction.

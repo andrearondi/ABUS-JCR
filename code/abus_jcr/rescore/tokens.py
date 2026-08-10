@@ -3,15 +3,51 @@
 | block | dims | contents |
 |---|---|---|
 | ``appearance``  | 128 | the frozen encoder embedding ``a_i`` |
-| ``abs_geom``    | 7   | ``cen_d*/S*`` (S = ``meta["iso_shape"]``), ``log1p(ext_d*)``, ``anisotropy = ext_d0 / mean(ext_d1, ext_d2)`` |
+| ``abs_geom``    | 6   | ``cen_d*/S*`` (S = ``meta["iso_shape"]``), ``log1p(ext_d*)`` |
 | ``score_stats`` | 7   | ``SCORE_STAT_COLUMNS`` verbatim, with ``slice_count``/``z_span`` ``log1p``-transformed |
 | ``tube_geom``   | 2   | ``TUBE_GEOM_COLUMNS`` = ``centroid_jitter``, ``area_cv`` |
 | ``rank``        | 17  | ``rank_norm`` + a 16-D sinusoidal embedding of the integer ``rank`` |
 
 **De-duplication (resolves the double-listing in PHASE_4.md §1.2):** ``z_span`` and
 ``fill_ratio`` live ONLY in ``score_stats`` — they are frozen ``SCORE_STAT_COLUMNS``
-members — so ``abs_geom`` carries centroid + log-size + anisotropy only. Recorded here so
-the §4.7 block ablation stays clean.
+members — so ``abs_geom`` carries centroid + log-size only. Recorded here so the §4.7 block
+ablation stays clean.
+
+**The anisotropy feature was REMOVED 2026-08-09** (``abs_geom`` 7 → 6 dims). PHASE_4.md §1.2
+specifies it as *"anisotropy = depth-extent / mean-lateral-extent — the Phase-0b signal"*, and
+every part of that description turned out to be wrong or dead:
+
+* **Wrong axis.** It was computed as ``ext_d0 / mean(ext_d1, ext_d2)``, and ``d0`` is the
+  MEASURED **lateral** axis (``AXIS_CHECK.md``, 129/130 volumes, four independent lines), not
+  depth/beam as ``conventions`` still declares. It measured lateral elongation throughout.
+* **Uninterpretable units.** In the deployed cache one voxel spans 1.0959 × 0.1460 × 0.4000 mm
+  (Inv. 6 amendment, ≈7.5× in-plane aspect error), so a physically CUBIC candidate reads
+  **0.195** on this scale, not 1.0. The number has no physical reading.
+* **Dead signal.** It is the weakest of all 12 pool features: val Cliff's δ **0.097**, balanced
+  accuracy **0.543** against a chance floor of 0.5 (train δ 0.078) — noise, on the promoted
+  pool and the archived one alike.
+* **Its motivating hypothesis is a closed negative result.** The Phase-0b shadow-geometry claim
+  was tested three ways and failed each: ``structure_present = false`` on both pools, the
+  per-candidate δ is **−0.097** (small *and* wrong-signed), and ``[I.6b]`` measured elongation
+  about the *true* beam axis to find **zero** candidates above 2× beam elongation in **8/8**
+  detectors across both splits. There is no ray-shaped population to detect.
+* **Near-redundant with its own block.** Measured on log-uniform extents over the pool's range:
+  a linear readout from the three ``log1p(ext_d*)`` beside it recovers the raw ratio at only
+  ``R² = 0.415``, but ``log(ratio)`` at ``R² = 0.955`` and a single nonlinearity — which the
+  token projection applies anyway — at ``R² = 0.945``. So ``[I.6b]``'s "already *linearly*
+  recoverable" was imprecise (it holds for a *geometric*-mean ratio, not the arithmetic-mean
+  one shipped, and ``log1p ≠ log`` by up to 0.41 at small extents), but ~95 % recoverable is
+  the operative fact, and the residual 5 % is an arithmetic-vs-geometric-mean artefact rather
+  than a quantity anything predicts.
+
+**Nothing recorded depends on it:** ``anisotropy`` is *not* one of the 31 frozen
+``CANDIDATE_COLUMNS`` — it is derived, and it survives in ``probe.pool_diag``,
+``probe.fp_structure`` and ``probe.anisotropy``, which are where every recorded number lives.
+Removing it changes the **model**, not the diagnostics.
+
+**No replacement was added.** The true-beam-axis version separates TP/FP better (``|δ| ≈ 0.27``,
+7/8 detectors) but ``[I.6b]`` ruled explicitly that *"it licenses no new feature"*, and choosing
+a feature by its measured val effect size would add a selection surface for no mechanism.
 
 **``detector_of_origin`` is NOT a feature** (Inv. 7): it is the set key and is constant
 within a run. **Standardisation** stats are computed on the TRAIN pool only, persisted in
@@ -38,7 +74,7 @@ __all__ = ["BLOCK_DIMS", "rank_sinusoid", "build_feature_matrix",
 #: Width contributed by each block. ``sum(BLOCK_DIMS.values())`` is the full token width.
 BLOCK_DIMS: Dict[str, int] = {
     "appearance": int(C.RESC_D_APP),
-    "abs_geom": 7,
+    "abs_geom": 6,          # 7 before 2026-08-09; the anisotropy dim was removed (docstring)
     "score_stats": len(C.SCORE_STAT_COLUMNS),
     "tube_geom": len(C.TUBE_GEOM_COLUMNS),
     "rank": 1 + int(C.RESC_RANK_PE_DIM),
@@ -68,11 +104,14 @@ def _block_abs_geom(df: pd.DataFrame, iso_shape_by_pid: Dict[int, Sequence[int]]
     shp = np.array([[float(s) for s in iso_shape_by_pid[int(p)]] for p in df["public_id"]], dtype=float)
     cen = df[["cen_d0", "cen_d1", "cen_d2"]].to_numpy(float)
     ext = df[["ext_d0", "ext_d1", "ext_d2"]].to_numpy(float)
-    lat = (ext[:, 1] + ext[:, 2]) / 2.0
-    aniso = np.divide(ext[:, 0], lat, out=np.zeros_like(lat), where=lat > 0)
-    cols = [cen[:, a] / shp[:, a] for a in range(3)] + [np.log1p(ext[:, a]) for a in range(3)] + [aniso]
+    # NO extent ratio here. The `anisotropy` dim (ext_d0 / mean(ext_d1, ext_d2)) was removed
+    # on 2026-08-09: wrong axis, uninterpretable units, weakest of all 12 pool features, its
+    # motivating hypothesis a closed negative result, and ~95% recoverable from the three
+    # log1p(ext) below it through one nonlinearity. Full evidence in the module docstring.
+    cols = ([cen[:, a] / shp[:, a] for a in range(3)]
+            + [np.log1p(ext[:, a]) for a in range(3)])
     names = ["cen_d0_norm", "cen_d1_norm", "cen_d2_norm",
-             "log1p_ext_d0", "log1p_ext_d1", "log1p_ext_d2", "anisotropy"]
+             "log1p_ext_d0", "log1p_ext_d1", "log1p_ext_d2"]
     return np.stack(cols, axis=1), names
 
 

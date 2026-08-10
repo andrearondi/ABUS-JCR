@@ -1,8 +1,9 @@
 """Candidate elongation about each axis, in physically correct millimetres.
 
-Why this exists. The deployed feature is
+Why this exists. The quantity every pool-diagnostics table reports as ``anisotropy`` is
 
-    anisotropy = ext_d0 / mean(ext_d1, ext_d2)          (rescore/tokens._block_abs_geom)
+    anisotropy = ext_d0 / mean(ext_d1, ext_d2)
+                 (probe.pool_diag.augment, probe.fp_structure._anisotropy)
 
 on **iso-cache voxel** extents. Two things make that not what its name says:
 
@@ -18,11 +19,21 @@ are not evidence that depth-elongated candidates are absent — that ratio was n
 This module computes all three, in true millimetres, from the frozen record alone.
 
 **What this can and cannot license.** It is a *diagnostic*, not a feature proposal. The
-``abs_geom`` block already carries ``log1p(ext_d0), log1p(ext_d1), log1p(ext_d2)``, so every
-ratio of extents is a difference of logs and is linearly recoverable from what the set model
-already receives. A "corrected" anisotropy scalar would therefore add no information. What
-these numbers answer is a different question: does elongation about the beam axis separate
-TP from FP *at all* — i.e. is there a ray-shaped-FP population in the pool?
+``abs_geom`` block already carries ``log1p(ext_d0), log1p(ext_d1), log1p(ext_d2)``, from which
+any extent ratio is recoverable — approximately, not exactly, and the distinction is worth
+stating: measured on log-uniform extents over the pool's range, a **linear** readout gives
+``R² = 0.415`` for the raw ratio but ``0.955`` for its log, and one nonlinearity (which the
+token projection applies anyway) gives ``0.945``. The gap is the arithmetic-vs-geometric-mean
+discrepancy plus ``log1p ≠ log`` at small extents; "a difference of logs" is exact only for a
+geometric-mean ratio. Either way a "corrected" anisotropy scalar adds ~nothing. What these
+numbers answer is a different question: does elongation about the beam axis separate TP from
+FP *at all* — i.e. is there a ray-shaped-FP population in the pool?
+
+**Outcome (2026-08-09).** No: zero candidates above 2× beam elongation in 8/8 detectors, both
+splits. Combined with a val Cliff's δ of 0.097 for the deployed lateral ratio — the weakest of
+all 12 pool features — the **anisotropy dim was removed from the Phase-4 token entirely**
+(``abs_geom`` 7 → 6). This module and the two probe definitions above are unchanged and remain
+the home of every recorded ``anisotropy`` number; only the *model* stopped consuming it.
 """
 
 from __future__ import annotations

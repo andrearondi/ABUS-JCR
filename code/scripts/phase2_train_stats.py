@@ -77,6 +77,13 @@ def main() -> int:
         manifest.loc[manifest["split"] == "val", "split"] = "train"
         print("NOTE: --probe-split val is a METHOD SMOKE (ballpark only); it sets NO design constant.")
 
+    # The design constants this gate reconciles are substrate-specific, so record which
+    # substrate produced them and refuse a cache built under a different axis profile.
+    print(f"# axis profile = {C.AXIS_PROFILE} | spacing_storage_mm = {C.SPACING_STORAGE_MM}")
+    from abus_jcr import cache as K
+    print(f"# iso cache    = {K.cache_dir(cache_root(args))}")
+    K.assert_hash(cache_root(args))
+
     stats = DS.probe_train_stats(cache_root(args), manifest, slice_boxes)
     out_dir = Path(args.out_root) / "stats"
     path = DS.write_stats(stats, out_dir)

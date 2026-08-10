@@ -3,8 +3,11 @@
 Materialises one float16 memmap per split, in **record row order**, named by ``crop_hash``
 so a stale cache can never be silently reused. Prints the [4.1] report: size, ROI-side
 histogram, pad-fraction distribution, and the **max set size over both pools**, which is
-ASSERTED against ``RESC_MAX_SET_SIZE`` — the largest RECORDED set is 253 ([P3U2.10]) but the
-per-seed maxima are not all recorded, so this is the place it gets pinned.
+ASSERTED against ``RESC_MAX_SET_SIZE`` (576). On the promoted pool the worst single set is
+**train fold0 vol14 at 509** and val's worst is **292** ([F.7]); the archived pool's max was
+253, which is why the constant was 320 and would have failed this assertion on the first run.
+This is the place the true max gets pinned — a FAIL here means raise the constant and rebuild,
+never truncate a frozen pool.
 
 Usage:
     python scripts/phase4_build_crops.py --splits train val \\

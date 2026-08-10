@@ -22,6 +22,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 import pandas as pd
 
+from .. import conventions as C
 from ..conventions import KEY_FP
 
 EPS = 1e-6
@@ -37,13 +38,26 @@ POOL_FEATURES: List[str] = [
 
 def augment(df: pd.DataFrame) -> pd.DataFrame:
     """Return a copy with the two derived features: ``box_diag`` (official 3D diagonal) and
-    ``anisotropy`` (iso depth-extent / mean lateral extent, matching the Phase-0b probe)."""
+    ``anisotropy`` = ``ext_d0 / mean(ext_d1, ext_d2)``, matching the Phase-0b probe exactly.
+
+    AXIS, corrected 2026-08-09 (the value and every recorded number are unchanged): ``d0`` is
+    the MEASURED **lateral** axis, so this is lateral elongation, not depth elongation as the
+    name suggests. See ``probe.fp_structure._anisotropy`` and ``[I.6b]`` for the full note and
+    for the beam-axis measurement this one does NOT make.
+
+    The numerator axis is ``conventions.FP_PROBE_ANISO_DEPTH_AXIS`` (2026-08-09): **0** on the
+    ``legacy`` profile, so every recorded table reproduces byte-for-byte, and **1** on
+    ``measured``, where it is the true beam axis on a genuinely cubic voxel. Kept identical to
+    ``probe.fp_structure._anisotropy`` by construction — the two must never drift apart."""
     out = df.copy()
     out["box_diag"] = np.sqrt(out["x_length"].to_numpy(float) ** 2
                               + out["y_length"].to_numpy(float) ** 2
                               + out["z_length"].to_numpy(float) ** 2)
-    lat = (out["ext_d1"].to_numpy(float) + out["ext_d2"].to_numpy(float)) / 2.0
-    out["anisotropy"] = np.where(lat > 0, out["ext_d0"].to_numpy(float) / np.where(lat > 0, lat, 1.0), np.nan)
+    a = int(C.FP_PROBE_ANISO_DEPTH_AXIS)
+    others = [out[f"ext_d{k}"].to_numpy(float) for k in range(3) if k != a]
+    lat = (others[0] + others[1]) / 2.0
+    num = out[f"ext_d{a}"].to_numpy(float)
+    out["anisotropy"] = np.where(lat > 0, num / np.where(lat > 0, lat, 1.0), np.nan)
     return out
 
 
@@ -70,8 +84,13 @@ def _set_groups(df: pd.DataFrame):
         yield det, pid, g
 
 
-def _best_balacc(pos: Sequence[float], neg: Sequence[float]) -> tuple:
-    """Best single-threshold balanced accuracy (direction-agnostic) + the threshold. O(u*(np+nn))."""
+def best_balacc(pos: Sequence[float], neg: Sequence[float]) -> tuple:
+    """Best single-threshold balanced accuracy (direction-agnostic) + the threshold. O(u*(np+nn)).
+
+    Public since 2026-08-09: Phase-4's [4.3] reports B1's balanced accuracy next to its CPM,
+    so a B1 that fails to clear B0 can be attributed (broken pipeline vs strong B0) against
+    this pool's own single-feature ceiling. One implementation, so the two are comparable.
+    """
     pos = np.asarray(pos, float); pos = pos[np.isfinite(pos)]
     neg = np.asarray(neg, float); neg = neg[np.isfinite(neg)]
     if len(pos) == 0 or len(neg) == 0:
@@ -101,7 +120,7 @@ def feature_discriminability(df: pd.DataFrame) -> pd.DataFrame:
             continue
         a, b = tp[f].to_numpy(float), fp[f].to_numpy(float)
         delta = _cliffs_delta(a, b)
-        ba, thr = _best_balacc(a, b)
+        ba, thr = best_balacc(a, b)
         rows.append({"feature": f, "n_tp": int(np.isfinite(a).sum()), "n_fp": int(np.isfinite(b).sum()),
                      "tp_median": float(np.nanmedian(a)) if len(a) else float("nan"),
                      "fp_median": float(np.nanmedian(b)) if len(b) else float("nan"),

@@ -141,7 +141,9 @@ def score_pool(model, feats: np.ndarray, coord: np.ndarray, length: np.ndarray,
 
     from .datasets import collate_sets
 
-    max_set_size = int(C.RESC_MAX_SET_SIZE if max_set_size is None else max_set_size)
+    # max_set_size=None => pad each batch to the BATCH max (datasets.collate_sets). Padding
+    # to the global RESC_MAX_SET_SIZE would be ~45x wasted work on a batch of median sets and
+    # guards against nothing that batch-max padding does not already make unreachable.
     batch_sets = int(C.RESC_SET_BATCH_SETS if batch_sets is None else batch_sets)
     labels = np.zeros(len(feats), dtype=np.float32)          # unused at inference
     out = np.full(int(n_rows), np.nan, dtype=float)

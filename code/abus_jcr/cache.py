@@ -42,9 +42,16 @@ def _write_cache_meta(cdir: Path) -> None:
     meta_path = cdir / "CACHE_META.json"
     if meta_path.exists():
         return
+    # `axis_profile` is recorded but deliberately NOT part of `_canonical_cfg`, i.e. NOT
+    # part of the hash: adding a key there would change the deployed cache's name from
+    # ab1fdf28... and invalidate every artefact built on it. It does not need to be in the
+    # hash — `SPACING_STORAGE_MM` already is, and that is what the profile selects, so the
+    # two profiles get different directories either way. This field just makes an on-disk
+    # cache say which profile wrote it without re-deriving anything.
     payload = {
         "preprocess_hash": preprocess_hash(),
         "schema_version": _SCHEMA_VERSION,
+        "axis_profile": C.AXIS_PROFILE,
         "config": _canonical_cfg(C.ISO_SPACING_MM),
     }
     meta_path.write_text(json.dumps(payload, sort_keys=True, indent=2))

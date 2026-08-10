@@ -14,10 +14,25 @@ negative control in ``tests/test_rescore_crops.py``.
 p99 = 228 — a 48-voxel (19.2 mm) box is smaller than the MEDIAN lesion's in-plane
 diagonal. So the ROI side is sized from the candidate's own iso extents,
 ``clip(RESC_CROP_CONTEXT * max(ext), RESC_CROP_MIN_SIDE, RESC_CROP_MAX_SIDE)``, and
-trilinearly resampled onto the fixed ``RESC_CROP_OUT³`` grid. The ROI is **cubic** (not
-per-axis normalised) so the crop stays isotropic in PHYSICAL space and a thin
-depth-column shadow still looks like a thin depth-column shadow; absolute size is not
-lost, it is carried explicitly by the ``abs_geom`` + ``score_stats`` token blocks.
+trilinearly resampled onto the fixed ``RESC_CROP_OUT³`` grid.
+
+The ROI is **cubic in cache voxels, not per-axis normalised**, so that two candidates of
+different absolute size but the same shape produce the same crop *shape* — per-axis
+normalisation would map every candidate to a unit cube and delete the aspect cue entirely.
+Absolute size is not lost either: it is carried explicitly by the ``abs_geom`` +
+``score_stats`` token blocks.
+
+⚠ **This does NOT make the crop isotropic in physical space, and the docstring used to claim
+it did.** Per the Inv. 6 amendment the in-plane spacing roles in ``SPACING_STORAGE_MM`` are
+inverted, so one cache voxel really spans ``1.0959 × 0.1460 × 0.4000 mm`` — a ≈7.5× in-plane
+aspect error that a cubic voxel ROI preserves rather than removes. The old rationale ("a thin
+depth-column shadow still looks like a thin depth-column shadow") is doubly wrong: the axis it
+named is lateral, and ``[I.6b]`` found **no** ray-shaped population anywhere — zero candidates
+above 2× beam elongation in any of 8 detectors, both splits. The cubic ROI is kept because
+shape-preservation is the right default and because changing it would invalidate ``crop_hash``
+for no measured gain, **not** because it corrects the geometry. Fixing the geometry means
+rebuilding the iso cache, which is a separate and far more expensive decision (``AXIS_CHECK.md``
+§5–7) that nothing measured so far bears on.
 
 Outside the volume is **zero** (anechoic black), never edge-replicated: replicating the
 skin line downward is acoustically impossible.

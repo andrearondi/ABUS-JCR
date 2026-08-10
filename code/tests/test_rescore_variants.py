@@ -205,7 +205,29 @@ def test_selection_rejects_mismatched_inputs():
 
 # --------------------------------------------------------------------------- constants tripwire
 def test_the_frozen_phase3_substrate_has_not_drifted():
-    """Phase 4 touches NONE of these (spec §Context)."""
+    """Phase 4 touches NONE of these (spec §Context).
+
+    **Legacy-profile tripwire.** These are the values frozen on the DEPLOYED substrate
+    ([P3U2.7]/[P3U2.8], re-derived unchanged on the corrected-flip folds at [F.4]), and they
+    are what every recorded Phase-3/4 number stands on. On the `measured` axis profile the
+    same constants are **provisional and gate-derived** by construction — `[I2.6]`/`[I3.2]`
+    of `iso/RB_ISO_REBUILD.md` re-derive them on a cache whose in-plane voxel size is
+    2.7x finer laterally, so pinning the deployed literals there would assert that a
+    different substrate must produce identical constants, which is the opposite of what the
+    branch is measuring. Split rather than relaxed: the structural half below binds on both.
+    """
+    # --- profile-independent: Inv. 4 structure, not substrate-specific values -------------
+    assert C.LINK_3DNMS_IOU is None,        "3D NMS is OFF on both substrates (not recall-neutral)"
+    assert C.LINK_CONTAINMENT_THRESH == 1.0, "containment suppression is OFF on both"
+    assert C.RESCORER_POOL_BUDGET == 200,   "a Phase-4 O(n^2) budget, not a physical quantity"
+    assert C.LINK_SCORE_AGG == "max"        # the committed per-tube aggregation
+    assert C.LINK_OP_SCORE_THRESH == C.DET_SELECT_OP_THRESH, \
+        "selection and deployment must read the pool at the SAME operating point ([P3U2.9])"
+
+    if C.AXIS_PROFILE != "legacy":
+        pytest.skip(f"substrate values are gate-derived on the {C.AXIS_PROFILE!r} profile "
+                    "(iso/RB_ISO_REBUILD.md [I2.6], [I3.2]); the structural half above ran")
+
     expected = dict(LINK_IOU=0.30, LINK_MAX_Z_GAP=1, LINK_MIN_TUBE_LEN=8,
                     LINK_MAX_TUBE_ZSPAN=182, LINK_MAX_CENTROID_DRIFT=342,
                     LINK_CONTAINMENT_THRESH=1.0, LINK_3DNMS_IOU=None,
@@ -219,7 +241,11 @@ def test_phase4_constants_match_the_spec():
     assert (C.RESC_CROP_OUT, C.RESC_CROP_CONTEXT, C.RESC_CROP_MIN_SIDE, C.RESC_CROP_MAX_SIDE) \
         == (48, 1.5, 48, 160)
     assert C.RESC_D_APP == 128 and C.RESC_RANK_PE_DIM == 16 and C.RESC_GEOM_PE_DIM == 64
-    assert C.RESC_MAX_SET_SIZE == 320 and C.RESC_NEG_POS_RATIO is None
+    # 576, raised from 320 on 2026-08-09: the PROMOTED pool's worst set is train fold0 vol14
+    # at 509 candidates ([F.7]), so the old cap would have failed [4.1]'s assertion on the
+    # first run. The cap must strictly exceed the largest set either pool contains.
+    assert C.RESC_MAX_SET_SIZE == 576 and C.RESC_NEG_POS_RATIO is None
+    assert C.RESC_MAX_SET_SIZE > 509, "the promoted train pool contains a 509-candidate set"
     assert C.RESC_SEEDS == (0, 1, 2) and C.RESC_SET_EPOCHS == 60 and C.RESC_ENC_EPOCHS == 30
     assert C.RESC_TOKEN_BLOCKS == ("appearance", "abs_geom", "score_stats", "tube_geom", "rank")
     assert len(C.RESC_CE_SEARCH) == 4 and len(C.RESC_LAMBDA_SEARCH) == 4

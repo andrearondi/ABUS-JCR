@@ -22,9 +22,14 @@ def test_zoom_factors_match_spacing_ratio():
     f = zoom_factors()
     expected = tuple(C.SPACING_STORAGE_MM[a] / C.ISO_SPACING_MM for a in range(3))
     assert f == pytest.approx(expected, abs=1e-12)
-    # sanity at the frozen 0.4 mm: (0.1825, 0.5, 1.189185)
+    # 0.4 mm is held fixed across BOTH axis profiles, on purpose: it makes the spacing MAP the
+    # only changed variable between the two substrates (iso/ISO_NOTES.md §3.7).
     assert C.ISO_SPACING_MM == 0.4
-    assert f == pytest.approx((0.1825, 0.5, 1.189185), abs=1e-6)
+    # The literal is profile-specific — the two in-plane factors swap. Pinned both ways so a
+    # silent map edit fails here rather than at cache-build time.
+    literal = {"legacy":   (0.1825, 0.5, 1.189185),
+               "measured": (0.5, 0.1825, 1.189185)}[C.AXIS_PROFILE]
+    assert f == pytest.approx(literal, abs=1e-6)
 
 
 def test_iso_shape_is_round_of_native_times_f():

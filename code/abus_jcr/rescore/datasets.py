@@ -11,9 +11,17 @@ Two batchers:
   augmented crop cannot come from the cached 48³ tensor); with ``augment=False`` it reads
   the crop-cache memmap. Every non-pretraining consumer uses ``augment=False`` (Inv. 13:
   no augmentation and no TTA outside encoder pretraining).
-* :func:`collate_sets` — pads sets to ``RESC_MAX_SET_SIZE`` with a key-padding mask.
+* :func:`collate_sets` — pads a batch of sets to a common width with a key-padding mask.
   ``RESC_NEG_POS_RATIO is None``: **no negative subsampling**, so the train sets are
   exactly the eval sets.
+
+  Production callers pass ``max_set_size=None``, i.e. pad to the **batch** max. Padding
+  every batch to the global ``RESC_MAX_SET_SIZE`` (576 since the promotion, to admit the
+  509-candidate train set) would make a batch of median 85-candidate sets ~45× larger than
+  it needs to be, and it buys nothing: with batch-max padding a set can never exceed the
+  width, so the truncate-a-frozen-pool failure the explicit width guards against becomes
+  unreachable by construction. ``RESC_MAX_SET_SIZE`` keeps its real job — the [4.1]
+  assertion over both whole pools — and remains available here as an explicit cap.
 
 Numpy core (unit-tested on the laptop); torch is imported lazily only by
 :meth:`CropDataset.torch_dataset`.
@@ -54,6 +62,9 @@ def collate_sets(index_lists: Sequence[np.ndarray], feats: np.ndarray, labels: n
                  max_set_size: Optional[int] = None) -> Dict[str, np.ndarray]:
     """Pad a list of sets into ``(B, N, ·)`` tensors plus a boolean ``mask`` (True = real).
 
+    ``max_set_size=None`` (what production callers use) pads to the **batch** max; an
+    explicit value pads to that width and refuses any set larger than it.
+
     Padded ``length`` entries are **1.0**, not 0.0: the Axis-A descriptor takes
     ``log(w_n/w_m)``, and a zero would produce ``-inf`` inside the attention logits before
     the mask is applied. Padded ``labels`` are the ignore code, so they enter no loss term
@@ -91,8 +102,9 @@ def collate_sets(index_lists: Sequence[np.ndarray], feats: np.ndarray, labels: n
 class CropDataset:
     """Per-candidate 3D crops for encoder pretraining ([4.3]) and embedding caching ([4.4]).
 
-    ``augment=True`` re-extracts from the iso cache with centre jitter + d1 flip
-    (pretraining only); ``augment=False`` reads the crop-cache memmap (everything else).
+    ``augment=True`` re-extracts from the iso cache with centre jitter + a mirror along
+    **d0 = the MEASURED LATERAL axis** (pretraining only; never d1 = depth/beam, Inv. 13);
+    ``augment=False`` reads the crop-cache memmap (everything else).
     Each item is ``(crop (1,48,48,48) float32, rest_features, label_code, row)``.
     """
 

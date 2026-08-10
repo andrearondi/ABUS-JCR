@@ -1,12 +1,19 @@
 """[4.9] Interpretability — data-driven, not decorative (exit check 9).
 
-On the already-identified FP-heavy val sets (``val_FP-heavy_full_seed2_vol122`` plus the two
-other [P3U2.PD] exemplars), report for A1/FULL vs B2/B1:
+On FP-heavy val sets, report for A1/FULL vs B2/B1:
 
 * the **mean attention mass a TP places on its co-located TP peers vs on FPs** — the direct
-  test of the recorded TP-TP-vs-TP-FP ``|δ| ≈ 0.94`` structure (a TP's geometry to its
-  co-located TP peers is highly distinctive; FP clusters run 13.5/vol vs 1.0 for TPs);
+  test of the TP-TP-vs-TP-FP ``|δ| = 0.955`` structure measured on the PROMOTED val pool
+  ([F.9] §3; a TP's geometry to its co-located TP peers is highly distinctive), against
+  **14.0** FP clusters/vol vs **1.0** for TPs ([F.9] FP-structure probe);
 * the **refined-score change on the FP cluster** relative to B0's ``score_max`` ranking.
+
+**Choosing the sets.** The exemplars must come from the pool being probed. The [P3U2.PD]
+names describe the ARCHIVED pool and do not carry over. On the promoted pool pick the largest
+TP-bearing val sets from [F.7]'s per-volume log / [F.9] §4 — ``full_seed2:122`` (292
+candidates, the val maximum) is the natural first choice; ``full_seed2:120`` (197) and
+``full_seed1:100`` (152) are the next two. Confirm each is TP-bearing before quoting it, and
+note that ``full_seed0:129`` has **zero** candidates on this pool and is not a valid set.
 
 The printed verdict states plainly whether the geometry-aware rungs down-weight the cluster
 more. **B1 has no attention at all** — that is the point of the contrast, and it is reported
@@ -149,10 +156,14 @@ def main() -> int:
                   f"{'they DO down-weight it' if g < p else 'they do NOT down-weight it'}")
         report.append(entry)
 
-    print(f"\n# Read this against the recorded pairwise prior: TP-TP vs TP-FP |delta| ~ 0.94 "
-          f"(strong, the density/consensus signal the set attention captures natively) but "
-          f"TP-FP vs FP-FP max |delta| = 0.082 (weak — no per-pair FP-suppression signal). "
+    print(f"\n# Read this against the PROMOTED-pool pairwise prior ([F.9] §3): TP-TP vs TP-FP "
+          f"|delta| = 0.955 (STRONG — the density/consensus signal the set attention captures "
+          f"natively) but TP-FP vs FP-FP max |delta| = 0.126 (WEAK — no per-pair FP-suppression "
+          f"signal), with the FP-structure probe returning structure_present = false again. "
           f"A null geometry effect here is a PRE-REGISTERED outcome, not a bug.")
+    print(f"# AXIS NOTE: the largest pairwise component is log|dz|/d, and coordZ maps to storage "
+          f"d0 = the MEASURED LATERAL axis (coordY <-> d1 is depth/beam). Do not report it as a "
+          f"depth effect — see rescore/geometry_bias.py's axis note.")
     dump_json({"sets": report, "cluster_radius": args.cluster_radius,
                "variants": args.variants},
               Path(args.out_root) / "grid" / "attention_probe.json")

@@ -9,8 +9,24 @@ Phase-4 geometry-term claim scope ("relational" vs "set-level calibration").
 import numpy as np
 import pandas as pd
 
+from abus_jcr import conventions as C
 from abus_jcr.candidates.record import CANDIDATE_COLUMNS
 from abus_jcr.probe.fp_structure import fp_structure_probe
+
+
+def _elongated_along_probe_axis(long_vox=40.0, short_vox=5.0):
+    """Extents elongated about whichever axis the probe is configured to measure.
+
+    Planted via ``C.FP_PROBE_ANISO_DEPTH_AXIS`` rather than hard-coded to ``d0``. The
+    hard-coded version silently assumed the legacy profile, so under
+    ``ABUS_AXIS_PROFILE=measured`` the fixture built a candidate elongated along the axis the
+    probe does *not* read and the test failed for a reason that had nothing to do with the
+    probe. Deriving the fixture from the constant tests the mechanism on either substrate —
+    the same repair the flip-axis tests needed (HISTORY.md §8).
+    """
+    ext = [short_vox, short_vox, short_vox]
+    ext[int(C.FP_PROBE_ANISO_DEPTH_AXIS)] = long_vox
+    return tuple(ext)
 
 
 def _cand(vid, label, cen, ext):
@@ -37,7 +53,8 @@ def _clustered_elongated_fp_dataset():
         for base in fp_clusters:
             for k in range(3):
                 cen = (base[0] + k, base[1] + k, base[2])
-                rows.append(_cand(vid, "neg", cen, (40, 5, 5)))    # depth-elongated (aniso ~8)
+                # elongated about the probe's configured axis (aniso ~8), not a fixed d0
+                rows.append(_cand(vid, "neg", cen, _elongated_along_probe_axis()))
     return pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
 
 
@@ -56,7 +73,7 @@ def _isotropic_isolated_fp_dataset():
 def test_structure_present_detected():
     res = fp_structure_probe(_clustered_elongated_fp_dataset(), split_filter="val")
     assert res["verdict"]["structure_present"] is True
-    # FP anisotropy (ext_d0/mean(d1,d2)) ~ 8 >> TP ~ 1
+    # FP anisotropy (ext along FP_PROBE_ANISO_DEPTH_AXIS / mean of the other two) ~ 8 >> TP ~ 1
     assert res["fp"]["anisotropy_median"] > res["tp"]["anisotropy_median"]
     # FPs are more clustered: smaller NN distance + >1 cluster/vol
     assert res["fp"]["nn_dist_median"] < res["tp"]["nn_dist_median"]

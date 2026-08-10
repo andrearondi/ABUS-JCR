@@ -43,9 +43,11 @@ def add_phase4_paths(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT,
                         help=f"dataset root holding the split dirs; default {DEFAULT_DATA_ROOT}")
     parser.add_argument("--record-suffix", default="",
-                        help="'' = the PRIMARY frozen pool (default). 'hicov' reads "
-                             "candidates_train_hicov — the CONTINGENCY pool, which per spec "
-                             "Open escalation #3 needs the user's explicit go-ahead.")
+                        help="'' = the PRIMARY frozen pool (default), which since 2026-08-08 IS "
+                             "the promoted corrected-flip pool. The 'hicov' contingency pool is "
+                             "RETIRED (the promoted folds reach its 81 TP-bearing sets without its "
+                             "costs) — do not promote it. Any substrate change needs the user's "
+                             "explicit go-ahead (spec Open escalation #3).")
 
 
 # ----------------------------------------------------------------------------- paths
@@ -129,10 +131,15 @@ def val_pool_for_seed(record_val: pd.DataFrame, seed: int) -> pd.DataFrame:
 def gt_for_pool(gt_df: pd.DataFrame, record_df: pd.DataFrame) -> pd.DataFrame:
     """Restrict the GT table to the volumes this pool actually covers.
 
-    3 Train volumes emit zero candidates (97/100 covered); scoring them as silent misses
-    would understate every rung by the same amount, but it would also make the Phase-4
-    numbers incomparable to the recorded B0. B0 was computed on the pool's own volumes, so
-    this mirrors it — and the covered-volume count is printed for the record.
+    On the promoted pool the TRAIN split covers **100/100** volumes (the archived arm covered
+    97). The gap that remains is per-seed on VAL: ``full_seed0`` produces zero candidates for
+    **vol 129**, so it contributes 29 sets, not 30 ([F.7]). Scoring an uncovered volume as a
+    silent miss would understate every rung by the same amount, but it would also make the
+    Phase-4 numbers incomparable to B0, which is computed on the pool's own volumes — so this
+    mirrors B0, and the covered-volume count is printed for the record.
+
+    Note the official oracle still divides recall by the **30** GT lesions in the split, so
+    seed0's missing set is not silently inflating its recall ([F.8] audit).
     """
     pids = set(int(p) for p in record_df["public_id"].unique())
     return gt_df[gt_df["public_id"].astype(int).isin(pids)].reset_index(drop=True)
@@ -171,11 +178,15 @@ def set_batches(record_df: pd.DataFrame, feats: np.ndarray, seed: int,
     """A ``batches(epoch)`` callable for ``rescore.train.train_set_variant``.
 
     The batching unit is a SET (Inv. 7). No negative subsampling
-    (``RESC_NEG_POS_RATIO is None``) and no set is dropped: the 25/97 all-negative train
-    sets are the calibration anchors ``focal_bce`` needs.
+    (``RESC_NEG_POS_RATIO is None``) and no set is dropped: on the promoted train pool the
+    **19 of 100** all-negative sets (81/100 are TP-bearing, [F.9] §4) are the cross-volume
+    calibration anchors ``focal_bce`` needs, and dropping them would remove the only term
+    that supplies a level.
+
+    ``max_set_size=None`` pads each batch to the **batch** max, not to the global
+    ``RESC_MAX_SET_SIZE`` — see ``datasets.collate_sets``.
     """
     batch_sets = int(C.RESC_SET_BATCH_SETS if batch_sets is None else batch_sets)
-    max_set_size = int(C.RESC_MAX_SET_SIZE if max_set_size is None else max_set_size)
     groups = list(group_sets(record_df).values())
     labels = label_codes(record_df)
     coord, length = boxes_of(record_df)
