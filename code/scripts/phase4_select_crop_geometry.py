@@ -28,19 +28,32 @@ from pathlib import Path
 
 from abus_jcr import conventions as C
 
-from _phase4_common import add_phase4_paths, dump_json, encoder_dir
+from _phase4_common import add_phase4_paths, crops_dir, dump_json, encoder_dir
 
 
-def _run(args, tag: str, crop_side, extra_out: Path) -> dict:
+def child_cmd(args, crop_side, extra_out: Path) -> list:
+    """The child ``phase4_pretrain_encoder.py`` invocation for one arm.
+
+    ``--out-root`` is redirected per arm so the two encoders never overwrite each other, but
+    ``--crops-root`` stays on the SHARED [4.1] cache. Conflating the two is what made the
+    adaptive arm die with ``no CROP_META.json under .../crop_geometry/adaptive/crops/...``
+    (the fixed arm cannot expose it — ``--crop-side`` re-extracts and reads no cache).
+    """
     cmd = [sys.executable, str(Path(__file__).with_name("phase4_pretrain_encoder.py")),
            "--seed", "0", "--device", args.device,
            "--epochs", str(args.epochs),
            "--phase1-out", args.phase1_out, "--phase3-out", args.phase3_out,
-           "--data-root", args.data_root, "--out-root", str(extra_out)]
+           "--data-root", args.data_root, "--out-root", str(extra_out),
+           "--crops-root", str(crops_dir(args))]
     if args.record_suffix:
         cmd += ["--record-suffix", args.record_suffix]
     if crop_side is not None:
         cmd += ["--crop-side", str(crop_side)]
+    return cmd
+
+
+def _run(args, tag: str, crop_side, extra_out: Path) -> dict:
+    cmd = child_cmd(args, crop_side, extra_out)
     print(f"\n{'='*78}\n# [4.2] {tag}: {' '.join(cmd)}\n{'='*78}", flush=True)
     subprocess.run(cmd, check=True)
     report = json.loads((encoder_dir(argparse.Namespace(out_root=str(extra_out)), 0)

@@ -42,6 +42,11 @@ def add_phase4_paths(parser: argparse.ArgumentParser) -> None:
                         help=f"Phase-4 output root; default {DEFAULT_PHASE4_OUT}")
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT,
                         help=f"dataset root holding the split dirs; default {DEFAULT_DATA_ROOT}")
+    parser.add_argument("--crops-root", default=None,
+                        help="[4.1] crop-cache root; default <out-root>/crops. Split out because "
+                             "the cache is a SHARED read-only artefact while --out-root is where a "
+                             "run WRITES: [4.2] redirects --out-root per arm, and without this the "
+                             "adaptive arm looks for the cache inside its own arm directory.")
     parser.add_argument("--record-suffix", default="",
                         help="'' = the PRIMARY frozen pool (default), which since 2026-08-08 IS "
                              "the promoted corrected-flip pool. The 'hicov' contingency pool is "
@@ -60,7 +65,14 @@ def candidates_dir(args) -> Path:
 
 
 def crops_dir(args) -> Path:
-    return Path(args.out_root) / "crops"
+    """Where the [4.1] crop cache lives — ``--crops-root`` if given, else ``<out-root>/crops``.
+
+    Read-only for every consumer except ``phase4_build_crops.py``, and deliberately NOT tied to
+    ``--out-root``: a run that redirects its output root ([4.2]'s two arms) must still read the
+    one cache [4.1] built, never a per-arm copy of it.
+    """
+    root = getattr(args, "crops_root", None)
+    return Path(root) if root else Path(args.out_root) / "crops"
 
 
 def encoder_dir(args, seed: int) -> Path:
