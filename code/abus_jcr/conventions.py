@@ -583,14 +583,26 @@ if AXIS_PROFILE == "measured":
     DET_MAX_SIZE  = 448    # predicted round_up(max Train iso LONG  side = 432, 32)
     DET_IMAGE_MEAN = 0.23      # carried over; the resampling weights change slightly
     DET_IMAGE_STD  = 0.1658    # -> both are re-measured by the probe, not assumed
-    DET_ANCHOR_BASE_SIZES    = (16, 32, 64, 128, 256)
+    # RECONCILED at the [I2.1] HARD GATE (RESULTS_ISO_REBUILD.md [I2.1]); the
+    # (16,32,64,128,256) above was a placeholder copied from "legacy". DET_RULE
+    # derives the ladder from the Train diag percentiles measured on THIS cache:
+    #   b0 = 2**round(log2(diag_p1=5.8)) = 8; anchor_min_base enters as min(8,16) = 8
+    #   top check: diag_p99 145.6 / 2**(2/3) = 91.7 <= 128 -> no octave shift.
+    # The whole ladder drops one octave because at a uniform 0.4 mm grid the same
+    # lesions are smaller IN PIXELS than on a cache whose d0 pitch was 1.096 mm.
+    DET_ANCHOR_BASE_SIZES    = (8, 16, 32, 64, 128)
     # THE constant that most visibly encoded the distortion. Deployed is
     # (0.2, 0.25, 0.33, 1.0) -- a 7.5x wide skew that is the in-plane aspect error,
     # not lesion morphology. Undistorted, the SAME boxes give h/w p10/p50/p90
-    # ~ 1.22 / 1.85 / 3.04 (deployed 0.162/0.246/0.405 x 7.5065), which agrees with
-    # the independently measured GT box shape 1.89/0.63/0.76 and with "real breast
-    # masses are wider-than-tall" (HISTORY.md 5). Snapped to DET_RULE's grid:
-    DET_ANCHOR_ASPECT_RATIOS = (1.0, 1.5, 2.0)
+    # = 1.176 / 1.800 / 2.902 measured at [I2.1] (deployed 0.162/0.246/0.405 x ~7.3;
+    # the arithmetic 7.5068 is the factor for ONE rescaled box, and these are
+    # percentiles of a re-derived 3802-box set), agreeing with the independently
+    # measured GT box shape 1.89/0.63/0.76 and with "real breast masses are wider-
+    # than-tall" (HISTORY.md 5). RECONCILED at [I2.1]: the provisional (1.0,1.5,2.0)
+    # was a hand-snap that skipped DET_RULE's nearest-grid rule. Applying it --
+    #   1.176 -> 1.0 | 1.800 -> 2.0 | 2.902 -> 2.0 (grid max), U {1.0}
+    # -- gives (1.0, 2.0); 1.5 never wins a snap for any of the three percentiles.
+    DET_ANCHOR_ASPECT_RATIOS = (1.0, 2.0)
 
     # --- (2) PROVISIONAL — the Inv.-11 union-box merge distance --------------
     # 8 iso px means 8.8 mm laterally / 1.17 mm in depth on the deployed cache and
