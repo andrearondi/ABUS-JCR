@@ -15,13 +15,14 @@ import argparse
 import sys
 
 from _phase2_common import load_slice_boxes
-from _phase3_common import derive_link_caps, add_phase3_paths
+from _phase3_common import derive_link_caps, add_phase3_paths, profile_banner
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="[L1] derive tube drift caps from Train GT")
     add_phase3_paths(parser)
     args = parser.parse_args()
+    profile_banner()          # Inv. 6: name the substrate that produced this output
 
     caps = derive_link_caps(load_slice_boxes(args, "Train"))
     print("# [L1] Train-GT drift-cap derivation (SET these in conventions.py, then re-run [P3U.0a])\n")

@@ -25,7 +25,7 @@ from abus_jcr import conventions as C
 from abus_jcr.candidates.record import read_candidate_record, to_official_pred_csv
 from abus_jcr.eval.froc import evaluate_froc, cpm, recall_ceiling, bootstrap_cpm_ci
 from abus_jcr.probe import calibration as CAL
-from _phase3_common import add_phase3_paths, load_official_gt
+from _phase3_common import add_phase3_paths, load_official_gt, profile_banner
 
 
 def _headroom(sub, gt_df, det: str) -> dict:
@@ -61,6 +61,7 @@ def main() -> int:
     parser.add_argument("--no-headroom", action="store_true",
                         help="skip the cross-volume-calibration headroom decomposition")
     args = parser.parse_args()
+    profile_banner()          # Inv. 6: name the substrate that produced this output
 
     rec_base = Path(args.out_root) / "candidates" / "candidates_val"
     pool = read_candidate_record(rec_base)

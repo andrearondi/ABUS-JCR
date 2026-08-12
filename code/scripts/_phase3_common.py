@@ -47,8 +47,52 @@ def add_phase3_paths(parser: argparse.ArgumentParser) -> None:
                         help=f"dataset root holding the split dirs; default {DEFAULT_DATA_ROOT}")
 
 
+_PROFILE_ANNOUNCED = False
+
+
+def profile_banner(cache_dir_path: Path | None = None) -> None:
+    """Print the axis-profile banner once per process (idempotent).
+
+    Every Phase-3 artefact is substrate-specific under Inv. 6: a frozen linker, a
+    candidate pool and a B0' number mean different things on ``legacy`` and on
+    ``measured``. So each Phase-3 stdout has to name the substrate that produced it —
+    an output must be attributable from its own log, not from whichever shell happened
+    to run it. Mirrors the banner ``phase2_train_stats.py`` / ``phase2_train_retinanet.py``
+    already print (``iso/RB_ISO_REBUILD.md`` Trap 1).
+    """
+    global _PROFILE_ANNOUNCED
+    if _PROFILE_ANNOUNCED:
+        return
+    _PROFILE_ANNOUNCED = True
+    print(f"# axis profile = {C.AXIS_PROFILE} | spacing_storage_mm = {C.SPACING_STORAGE_MM}")
+    if cache_dir_path is not None:
+        print(f"# iso cache    = {cache_dir_path}")
+
+
 def cache_root(args) -> Path:
-    return Path(args.phase1_out) / "cache"
+    """Resolve the iso cache root, banner the profile, and REFUSE a foreign cache.
+
+    The guard lives HERE rather than in each caller so that a Phase-3 script cannot
+    forget it — every script that reads the cache goes through this function, and a new
+    one gets the guard by construction. Without it a missing
+    ``export ABUS_AXIS_PROFILE=measured`` surfaced as a ``FileNotFoundError`` on a
+    ``META_*.json`` deep in the call stack, which states the symptom and not the cause.
+    """
+    root = Path(args.phase1_out) / "cache"
+    from abus_jcr import cache as K
+    profile_banner(K.cache_dir(root))
+    try:
+        K.assert_hash(root)
+    except K.CacheHashMismatch as exc:
+        raise K.CacheHashMismatch(
+            f"{exc}\n"
+            f"  axis profile in this shell : {C.AXIS_PROFILE}\n"
+            f"  cache dir it resolved to   : {K.cache_dir(root)}\n"
+            f"  HINT: the two profiles name different cache dirs (legacy ab1fdf28…, "
+            f"measured 3f94f17f…). If you meant the isotropic substrate, run "
+            f"`export ABUS_AXIS_PROFILE=measured` and retry; if you meant the deployed "
+            f"one, point --phase1-out at outputs/phase1.") from exc
+    return root
 
 
 def checkpoints_dir(args) -> Path:

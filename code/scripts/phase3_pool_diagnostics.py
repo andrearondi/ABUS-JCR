@@ -314,6 +314,12 @@ def _load_iso_case(phase1_out, pid: int, want_volume: bool, official_gt=None):
         from abus_jcr.geometry import (mask_to_box_storage, official_box_to_storage,
                                        native_storage_to_iso_storage)
         croot = Path(phase1_out) / "cache"
+        # Same Trap-1 guard the shared `_phase3_common.cache_root` applies; this script
+        # resolves the cache by hand (it takes --out-root, not --phase1-out), so the
+        # guard has to be repeated here rather than inherited.
+        from _phase3_common import profile_banner
+        profile_banner(K.cache_dir(croot))
+        K.assert_hash(croot)
         mask = np.asarray(K.open_mask(croot, int(pid))) > 0
         iso_gt = mask_to_box_storage(mask.astype(np.uint8))          # (min_d0,min_d1,min_d2,max_d0,max_d1,max_d2)
         vol = K.open_vol(croot, int(pid)) if want_volume else None   # memmap; sliced lazily

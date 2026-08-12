@@ -18,13 +18,14 @@ from pathlib import Path
 
 from abus_jcr.candidates.record import read_candidate_record
 from abus_jcr.probe.fp_structure import fp_structure_probe
-from _phase3_common import add_phase3_paths
+from _phase3_common import add_phase3_paths, profile_banner
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="[3.7] FP-structure probe (Val)")
     add_phase3_paths(parser)
     args = parser.parse_args()
+    profile_banner()          # Inv. 6: name the substrate that produced this output
 
     pool = read_candidate_record(Path(args.out_root) / "candidates" / "candidates_val")
     res = fp_structure_probe(pool, split_filter="val")

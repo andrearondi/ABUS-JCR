@@ -164,6 +164,9 @@ def main() -> int:
     ap.add_argument("--out-json", default=None, help="optional path to write the simulation summary")
     args = ap.parse_args()
 
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _phase3_common import profile_banner
+    profile_banner()          # Inv. 6: name the substrate that produced this output
     sel_dir = Path(args.selection_dir)
     runs = _load_runs(sel_dir)
     if not runs:

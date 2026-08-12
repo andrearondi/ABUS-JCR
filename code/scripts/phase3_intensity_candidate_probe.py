@@ -40,7 +40,7 @@ import pandas as pd
 from abus_jcr import conventions as C
 from abus_jcr.io_nrrd import discover_cases, load_array
 from abus_jcr.probe import intensity_geom as ig
-from _phase3_common import add_phase3_paths, split_root
+from _phase3_common import add_phase3_paths, split_root, profile_banner
 
 # The three spacings the official challenge description quotes, as an unordered SET.
 # Which one belongs to which axis is exactly what Stage 1 determines; nothing here
@@ -733,6 +733,7 @@ def main() -> int:
                     help=f"grid cell for the 2-D correspondence maps (default {CELL_MM} mm). "
                          "Sweep it to check the plane correlations are not a binning artefact.")
     args = ap.parse_args()
+    profile_banner()          # Inv. 6: name the substrate that produced this output
     CELL_MM = float(args.cell_mm)
 
     out_dir = Path(args.out_root) / "intensity_probe"

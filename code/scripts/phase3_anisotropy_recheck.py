@@ -36,7 +36,7 @@ from abus_jcr import conventions as C
 from abus_jcr.candidates.record import read_candidate_record
 from abus_jcr.probe import anisotropy as A
 from abus_jcr.probe.intensity_geom import cliffs_delta
-from _phase3_common import add_phase3_paths
+from _phase3_common import add_phase3_paths, profile_banner
 
 # Measured on 130 volumes (30 Val + 100 Train, disjoint): four independent lines agree.
 # See results/AXIS_CHECK.md and RESULTS_INTENSITY_PROBE.md [I.3]. Passed as a DEFAULT, not
@@ -172,6 +172,7 @@ def main() -> int:
     ap.add_argument("--true-spacing", default=",".join(str(s) for s in MEASURED_SPACING_MM),
                     help="measured native spacing, storage order, mm")
     args = ap.parse_args()
+    profile_banner()          # Inv. 6: name the substrate that produced this output
 
     true_spacing = tuple(float(x) for x in args.true_spacing.split(","))
     iso_mm = A.iso_voxel_mm(true_spacing)
