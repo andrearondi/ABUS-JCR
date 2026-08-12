@@ -141,20 +141,34 @@ def val_pool_for_seed(record_val: pd.DataFrame, seed: int) -> pd.DataFrame:
 
 
 def gt_for_pool(gt_df: pd.DataFrame, record_df: pd.DataFrame) -> pd.DataFrame:
-    """Restrict the GT table to the volumes this pool actually covers.
+    """The **full split GT**, unrestricted — the [F.8] denominator. Coverage is reported only.
 
-    On the promoted pool the TRAIN split covers **100/100** volumes (the archived arm covered
-    97). The gap that remains is per-seed on VAL: ``full_seed0`` produces zero candidates for
-    **vol 129**, so it contributes 29 sets, not 30 ([F.7]). Scoring an uncovered volume as a
-    silent miss would understate every rung by the same amount, but it would also make the
-    Phase-4 numbers incomparable to B0, which is computed on the pool's own volumes — so this
-    mirrors B0, and the covered-volume count is printed for the record.
+    CORRECTED 2026-08-10 (user-approved). This used to drop the volumes a pool does not cover,
+    and its own docstring claimed "the official oracle still divides recall by the 30 GT
+    lesions in the split, so seed0's missing set is not silently inflating its recall". **That
+    was false.** ``_official_det_score.evaluate`` iterates ``for pid in gt_pids`` and computes
+    ``fp = total_fp / len(df_list)``, ``recall = total_tp / sum(num_gts)`` — the GT csv sets
+    BOTH denominators, so restricting it re-based every number on the covered volumes.
 
-    Note the official oracle still divides recall by the **30** GT lesions in the split, so
-    seed0's missing set is not silently inflating its recall ([F.8] audit).
+    Measured: ``full_seed0`` yields zero candidates for vol 129, so [4.2] scored seed 0 against
+    29 volumes and printed ceiling **0.8621 = 25/29** / B0 CPM 0.6882, where ``[F.8]`` passes
+    the whole 30-volume table to every seed (``phase3_baseline_froc.py``) and recorded
+    **0.8333 = 25/30** / 0.6673 on the identical pool (2225 candidates both times).
+
+    A volume that holds a lesion and received no candidate is a **miss**, not an absence. It
+    also has to be counted that way for Phase 5, where the test split cannot be trimmed to what
+    the detector happened to find — so keeping the filter would have biased val against test.
+
+    Kept as a named function (rather than deleted at the call sites) so the coverage gap stays
+    visible and auditable at the one place it is relevant.
     """
     pids = set(int(p) for p in record_df["public_id"].unique())
-    return gt_df[gt_df["public_id"].astype(int).isin(pids)].reset_index(drop=True)
+    missing = sorted(set(int(p) for p in gt_df["public_id"].unique()) - pids)
+    if missing:
+        print(f"# GT denominator: {len(gt_df)} lesions over "
+              f"{gt_df['public_id'].nunique()} volumes (FULL split, [F.8] convention); "
+              f"the pool covers none of {missing} — scored as misses, not dropped", flush=True)
+    return gt_df.reset_index(drop=True)
 
 
 # ----------------------------------------------------------------------------- features
@@ -186,7 +200,7 @@ def label_codes(record_df: pd.DataFrame) -> np.ndarray:
 
 def set_batches(record_df: pd.DataFrame, feats: np.ndarray, seed: int,
                 batch_sets: Optional[int] = None, max_set_size: Optional[int] = None,
-                shuffle: bool = True):
+                shuffle: bool = True, labels: Optional[np.ndarray] = None):
     """A ``batches(epoch)`` callable for ``rescore.train.train_set_variant``.
 
     The batching unit is a SET (Inv. 7). No negative subsampling
@@ -197,10 +211,15 @@ def set_batches(record_df: pd.DataFrame, feats: np.ndarray, seed: int,
 
     ``max_set_size=None`` pads each batch to the **batch** max, not to the global
     ``RESC_MAX_SET_SIZE`` — see ``datasets.collate_sets``.
+
+    ``labels=None`` (every deployed caller) encodes the record's ``label`` column. `[4.2b]`
+    passes an explicit target array instead, because the soft ``iou_gt`` ramp is a float and
+    the record's label column is a string — injecting it here keeps the study on the [4.6]
+    schedule and batching rather than forking them.
     """
     batch_sets = int(C.RESC_SET_BATCH_SETS if batch_sets is None else batch_sets)
     groups = list(group_sets(record_df).values())
-    labels = label_codes(record_df)
+    labels = label_codes(record_df) if labels is None else np.asarray(labels, dtype=float)
     coord, length = boxes_of(record_df)
     feats32 = np.ascontiguousarray(feats, dtype=np.float32)
 

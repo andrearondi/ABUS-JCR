@@ -36,7 +36,8 @@ import pandas as pd
 
 from .. import conventions as C
 
-__all__ = ["SET_KEYS", "group_sets", "set_sizes", "collate_sets", "CropDataset"]
+__all__ = ["SET_KEYS", "group_sets", "set_sizes", "collate_sets", "batch_row_weights",
+           "CropDataset"]
 
 #: The set key (Inv. 7). ``detector_of_origin`` is bookkeeping only — never a model input.
 SET_KEYS = ("detector_of_origin", "public_id")
@@ -97,6 +98,21 @@ def collate_sets(index_lists: Sequence[np.ndarray], feats: np.ndarray, labels: n
         out["mask"][i, :n] = True
         out["rows"][i, :n] = idx
     return out
+
+
+def batch_row_weights(rows: np.ndarray, row_weights: Optional[np.ndarray]):
+    """Gather per-record weights onto a padded batch via ``collate_sets``' ``rows`` map.
+
+    ``rows`` is ``-1`` on padding, so those slots get **0.0** and cannot enter the weighted
+    mean even if a mask were ever dropped — the same belt-and-braces the ignore-coded padded
+    ``labels`` already use. Returns ``None`` when no weighting is requested, which keeps the
+    deployed path free of an all-ones multiply.
+    """
+    if row_weights is None:
+        return None
+    rows = np.asarray(rows)
+    w = np.asarray(row_weights, dtype=np.float32)
+    return np.where(rows >= 0, w[np.clip(rows, 0, len(w) - 1)], 0.0).astype(np.float32)
 
 
 class CropDataset:

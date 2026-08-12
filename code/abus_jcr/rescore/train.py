@@ -135,15 +135,23 @@ def pretrain_encoder(encoder, head, train_loader, evaluate_epoch: Callable[[int]
 def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: Callable[[int], Dict],
                       out_dir, seed: int, w_rank: float, lam: float, alpha: float,
                       lr: Optional[float] = None, epochs: Optional[int] = None,
-                      opt_cfg: Optional[Dict] = None, device: str = "cuda") -> Dict:
+                      opt_cfg: Optional[Dict] = None, device: str = "cuda",
+                      gamma: Optional[float] = None, soft_targets: bool = False,
+                      row_weights=None) -> Dict:
     """[4.6] Train ONE ``(variant, seed, trial)`` over the cached embeddings.
 
     ``batches(epoch)`` yields dicts from ``datasets.collate_sets`` (already padded + masked);
     the batching unit is a SET, ``RESC_SET_BATCH_SETS`` sets per step. Sets with no positive
     are KEPT — they are the all-negative calibration anchors ``focal_bce`` needs.
+
+    ``gamma`` / ``soft_targets`` / ``row_weights`` are the `[4.2b]` objective-alignment knobs
+    and are inert at their defaults. ``row_weights`` is indexed **per record row** and is
+    gathered onto each padded batch through ``collate_sets``' ``rows`` map, so it needs no
+    change to the batch schema and padding can never pick up a weight.
     """
     import torch
 
+    from .datasets import batch_row_weights
     from ..detect.train import seed_everything
 
     seed_everything(int(seed))
@@ -166,8 +174,12 @@ def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: C
             t = {k: torch.as_tensor(v).to(device) for k, v in batch.items()
                  if k in ("feats", "labels", "coord", "length", "mask")}
             logits = model(t["feats"].float(), t["coord"].float(), t["length"].float(), t["mask"])
+            bw = batch_row_weights(batch["rows"], row_weights)
+            if bw is not None:
+                bw = torch.as_tensor(bw).to(logits.device)
             loss, parts = rescorer_loss(logits, t["labels"].float(), t["mask"].float(),
-                                        w_rank=float(w_rank), lam=float(lam), alpha=float(alpha))
+                                        w_rank=float(w_rank), lam=float(lam), alpha=float(alpha),
+                                        gamma=gamma, soft=bool(soft_targets), bce_weights=bw)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
