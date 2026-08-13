@@ -625,7 +625,13 @@ if AXIS_PROFILE == "measured":
     # (228 px x 0.146 mm ~ 33 mm of DEPTH). Undistorted the p99 is set by the lateral
     # extent instead; prediction ~112 px -> cap ~168, i.e. the cap BINDS for the first
     # time. Re-derived at [I3.2]; if it comes out a no-op again, say so.
-    LINK_MAX_CENTROID_DRIFT = 168
+    # [I2.6] DERIVED 2026-08-13: inplane_extent_p99 = 119.99 px -> round(1.5 * 119.99) = 180.
+    # Prediction ~168 was close (the p99 came in at 120 rather than ~112). The substantive
+    # half of P5 holds: 342 -> 180 is a sharp drop and the cap now BINDS laterally
+    # (180 < the 432-px d0 frame) where the deployed 342 >= the 341-px frame was a no-op.
+    # It is still a no-op on d1 (180 > the 124-px depth frame) -- which is correct here,
+    # because a lesion cannot drift further than the axis is wide.
+    LINK_MAX_CENTROID_DRIFT = 180
     LINK_CONTAINMENT_THRESH = 1.0   # off, as deployed
     LINK_3DNMS_IOU          = None  # off, as deployed (Phase-4 ablation only)
     LINK_NMS_THRESH         = 0.70
