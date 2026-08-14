@@ -43,8 +43,15 @@ from .. import conventions as C
 from .datasets import group_sets
 from .losses import encode_labels, soft_quality_target
 
-__all__ = ["OBJECTIVE_FACTORS", "DEPLOYED_CELL", "objective_grid", "record_targets",
-           "record_lesion_weights", "threshold_occupancy", "ignore_band_audit"]
+__all__ = ["OBJECTIVE_FACTORS", "DEPLOYED_CELL", "CONFIRMATION_CELLS", "objective_grid",
+           "record_targets", "record_lesion_weights", "threshold_occupancy",
+           "ignore_band_audit", "select_ci_cells", "estimate_oracle_calls",
+           "ORACLE_SECONDS_PER_CALL"]
+
+#: Measured on the promoted val seed-0 pool (2225 candidates / 30 volumes): the seed-0
+#: `[4.2b]` run issued ~1428 `evaluate()` calls and took ~3 h. The Phase-4 runbook's ~2 s
+#: figure is from a smaller pool; do not plan `[4.2b/c]` with it.
+ORACLE_SECONDS_PER_CALL = 7.6
 
 #: The factorial axes. Order fixes the variant name, so a name is readable without a legend.
 OBJECTIVE_FACTORS: Dict[str, Tuple] = {
@@ -57,6 +64,16 @@ OBJECTIVE_FACTORS: Dict[str, Tuple] = {
 #: The cell `[4.3]`/`[4.6]` actually ship — the control the study is read against.
 DEPLOYED_CELL: Dict = {"gamma": C.RESC_FOCAL_GAMMA, "alpha": 0.25,
                        "soft": False, "per_lesion": False}
+
+#: `[4.2c]`'s 2x2: the two factors that moved on seed 0, at the deployed alpha, hard labels.
+#: `soft` is dropped (its clean read inside the per-candidate column is +0.0023 = nil, and its
+#: `per_lesion` quadrant was void before the 2026-08-13 weight fix); `alpha` is dropped (+0.001
+#: overall, and its apparent +0.04 sits only in the corner the winner was picked from, so it is
+#: confounded with the selection). Narrowing the grid is the ONLY cheap lever: the per-epoch
+#: table was 67 % of the seed-0 run, and shortening the schedule would reshape the cosine
+#: anneal and make the result incomparable to seed 0.
+CONFIRMATION_CELLS = ("g0_a0.25_hard_lesion", "g2_a0.25_hard_lesion",
+                      "g0_a0.25_hard_cand", "g2_a0.25_hard_cand")
 
 
 def _variant_name(cell: Dict) -> str:
@@ -77,6 +94,33 @@ def objective_grid() -> List[Dict]:
     return out
 
 
+def select_ci_cells(results: Sequence[Dict], k: int) -> List[Dict]:
+    """The ``k`` cells worth paying a bootstrap for: best of ``raw``/``spread`` CPM, desc.
+
+    Ranked on the better of the two because a cell that only wins after the rank-preserving
+    remap is still the cell to promote — the remap changes no ordering.
+    """
+    ranked = sorted(results, key=lambda r: -max(r["raw"]["cpm"], r["spread"]["cpm"]))
+    return ranked[:max(int(k), 0)]
+
+
+def estimate_oracle_calls(n_cells: int, epochs: int, n_boot_b0: int, n_boot_paired: int,
+                          ci_top_k: int, boot_b0_spread: bool = False) -> int:
+    """Total ``evaluate()`` calls a `[4.2b/c]` run will issue. ~7.6 s each on this pool.
+
+    Breakdown, and why it is worth printing before the run: the **per-epoch selection table**
+    is ``n_cells x epochs`` and was **67 %** of the seed-0 run. Narrowing the grid is therefore
+    the only cheap lever — shortening the schedule would reshape the cosine anneal and make the
+    result incomparable to seed 0, so it is not one.
+    """
+    per_epoch = int(n_cells) * int(epochs)
+    per_cell_final = int(n_cells) * 4          # raw + 2 headroom + spread
+    b0 = 1 + int(n_boot_b0) + 2                # point + CI + 2 headroom
+    b0_spread = 1 + (int(n_boot_b0) if boot_b0_spread else 0)
+    paired = 2 * int(n_boot_paired) * max(int(ci_top_k), 0)   # a paired draw scores BOTH arms
+    return per_epoch + per_cell_final + b0 + b0_spread + paired
+
+
 def record_targets(record_df: pd.DataFrame, soft: bool) -> np.ndarray:
     """The per-row loss target: the hard ``+1/0/-1`` code, or the ``iou_gt`` ramp.
 
@@ -90,21 +134,46 @@ def record_targets(record_df: pd.DataFrame, soft: bool) -> np.ndarray:
     return soft_quality_target(record_df["iou_gt"].to_numpy(float))
 
 
-def record_lesion_weights(record_df: pd.DataFrame) -> np.ndarray:
-    """Per-row weights: a SET's positives share 1.0 between them; everything else is 1.0.
+def record_lesion_weights(record_df: pd.DataFrame, targets=None) -> np.ndarray:
+    """Per-row weights: a SET's **positive target mass** sums to 1.0; negatives stay at 1.0.
 
     Grouped by ``(detector_of_origin, public_id)`` — the Inv.-7 set key — so one volume seen
     by three detectors is three lesions' worth of credit, which is what the oracle scores
-    (each seed pool is evaluated separately, Inv. 14). Same one-lesion-per-set approximation
-    as :func:`losses.per_lesion_weights`, and the same reason: the record carries ``iou_gt``
-    but no GT lesion id, and Phase 0a's single-lesion dominance holds 99/100 Train.
+    (each seed pool is evaluated separately, Inv. 14). One-lesion-per-set approximation: the
+    record carries ``iou_gt`` but no GT lesion id, and Phase 0a's single-lesion dominance
+    holds 99/100 Train.
+
+    With ``t_i`` the row's target in ``[0, 1]`` and ``S = sum(t)`` over the set::
+
+        w_i = 1 / S   if t_i > 0   else   1.0
+
+    so ``sum(w_i * t_i) == 1`` **exactly**: one set contributes one lesion's worth of positive
+    credit, spread over everything that partially hits it. A pure negative keeps unit weight,
+    and for hard labels ``S = n_pos``, reducing this **exactly** to ``1/n_pos`` / ``1.0``.
+
+    A single scalar per row cannot scale a partial row's positive and negative halves
+    differently, so this discounts an ignore-band row's *negative* contribution by ``1/S`` too.
+    That is a real distortion and it is the better one available: the hard path does not
+    discount those rows, it **deletes** them (Inv. 11 masks the band out of the loss entirely),
+    so this strictly dominates the baseline on that axis.
+
+    **CORRECTED 2026-08-13.** The first version read the hard label even when the caller was
+    training on the ramp, so a true positive was cut to ``1/n_pos`` (~1/15.6 on the train
+    pool) while an ignore-band row kept weight **1.0** *and* carried a partial positive
+    target — the model was trained to prefer near misses over hits. That is what produced the
+    four worst cells of the seed-0 `[4.2b]` grid (``soft_lesion``, mean −0.142, three of four
+    peaking at **epoch 0**). Those four cells are **void**, not evidence about soft targets;
+    the clean read of the ramp is the ``soft`` vs ``hard`` contrast inside the per-candidate
+    column, which is ``+0.0023`` — nil.
     """
-    hard = encode_labels(record_df["label"].to_numpy())
+    t = np.clip(np.asarray(
+        encode_labels(record_df["label"].to_numpy()) if targets is None else targets,
+        dtype=float), 0.0, 1.0)
     w = np.ones(len(record_df), dtype=float)
     for idx in group_sets(record_df).values():
-        pos = idx[hard[idx] > 0.5]
-        if len(pos):
-            w[pos] = 1.0 / float(len(pos))
+        s = float(t[idx].sum())
+        if s > 0.0:
+            w[idx] = np.where(t[idx] > 0.0, 1.0 / s, 1.0)
     return w
 
 

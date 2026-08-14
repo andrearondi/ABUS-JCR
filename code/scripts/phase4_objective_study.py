@@ -50,9 +50,12 @@ import numpy as np
 from abus_jcr import conventions as C
 from abus_jcr.probe import calibration as CAL
 from abus_jcr.probe.pool_diag import best_balacc
-from abus_jcr.rescore.evaluate import b0_spread_probability, evaluate_variant, score_pool
-from abus_jcr.rescore.objective import (ignore_band_audit, objective_grid, record_lesion_weights,
-                                        record_targets, threshold_occupancy)
+from abus_jcr.rescore.evaluate import (b0_spread_probability, compare_variants, evaluate_variant,
+                                       score_pool)
+from abus_jcr.rescore.objective import (CONFIRMATION_CELLS, ORACLE_SECONDS_PER_CALL,
+                                        estimate_oracle_calls, ignore_band_audit, objective_grid,
+                                        record_lesion_weights, record_targets, select_ci_cells,
+                                        threshold_occupancy)
 from abus_jcr.rescore.setmodel import B1Rescorer
 from abus_jcr.rescore.train import train_set_variant
 
@@ -131,11 +134,17 @@ def main() -> int:
     ap.add_argument("--n-boot", type=int, default=0,
                     help="draws for the SWEEP (0 = point estimates; the sweep selects, it "
                          "does not report)")
-    ap.add_argument("--n-boot-final", type=int, default=200,
-                    help="draws for B0 and the top-k variants — Inv. 12 for anything quoted")
-    ap.add_argument("--ci-top-k", type=int, default=3)
+    ap.add_argument("--n-boot-final", type=int, default=100,
+                    help="draws for B0's marginal CI. B0-spread is a CONTROL and never gets "
+                         "one — that was 25 min of pure waste in the seed-0 run.")
+    ap.add_argument("--n-boot-paired", type=int, default=100,
+                    help="draws for the PAIRED delta vs B0 on the top-k cells. Paired on the "
+                         "same frozen pool, so far tighter than the marginal intervals — this "
+                         "is what answers 'does it beat B0'. A paired draw costs TWO calls.")
+    ap.add_argument("--ci-top-k", type=int, default=1,
+                    help="how many top cells get the paired delta vs B0 (0 disables)")
     ap.add_argument("--variants", default="all",
-                    help="'all' or a comma-separated list of variant names")
+                    help="'all', 'confirm' (the [4.2c] 2x2), or a comma-separated list")
     ap.add_argument("--with-appearance", action="store_true",
                     help="add the appearance block back, reading the [4.4] embeddings at their "
                          "canonical path, so the same grid answers 'does the encoder earn its "
@@ -175,12 +184,32 @@ def main() -> int:
           f"val seed{args.seed} {len(rec_va)} rows / {len(set_index_lists(rec_va))} sets;  "
           f"GT {len(gt_va)} lesions over {gt_va['public_id'].nunique()} volumes\n")
 
+    grid = objective_grid()
+    if args.variants == "confirm":
+        grid = [c for c in grid if c["name"] in CONFIRMATION_CELLS]
+    elif args.variants != "all":
+        want = {s.strip() for s in args.variants.split(",")}
+        grid = [c for c in grid if c["name"] in want]
+
+    # ---------------------------------------------------------------- cost, BEFORE the run
+    calls = estimate_oracle_calls(n_cells=len(grid), epochs=args.epochs,
+                                  n_boot_b0=args.n_boot_final,
+                                  n_boot_paired=args.n_boot_paired, ci_top_k=args.ci_top_k)
+    print(f"# COST: ~{calls} oracle calls x ~{ORACLE_SECONDS_PER_CALL:.1f} s "
+          f"= ~{calls * ORACLE_SECONDS_PER_CALL / 3600:.1f} h "
+          f"({len(grid)} cells x {args.epochs} epochs = {len(grid) * args.epochs} calls "
+          f"({100 * len(grid) * args.epochs / max(calls, 1):.0f} %) is the per-epoch "
+          f"selection table).\n"
+          f"#   Measured on this pool, not assumed: the seed-0 [4.2b] run issued ~1428 calls "
+          f"and took ~3 h.\n", flush=True)
+
     # ---------------------------------------------------------------- references
     print("# ---- REFERENCES (same frozen pool, Inv. 8) ----")
     score_max = rec_va["score_max"].to_numpy(float)
+    b0_res = evaluate_variant(rec_va, score_max, gt_va, seed_tag="B0", n_boot=0)
     b0 = _report(rec_va, gt_va, score_max, "B0(score_max)", args.n_boot_final)
     b0s = _report(rec_va, gt_va, b0_spread_probability(score_max), "B0-spread",
-                  args.n_boot_final, with_headroom=False)
+                  n_boot=0, with_headroom=False)
     ref = b0["cpm"]
     for r in (b0, b0s):
         _print_row(r, ref)
@@ -189,10 +218,6 @@ def main() -> int:
           f"ceiling {b0['ceiling']:.4f}\n")
 
     # ---------------------------------------------------------------- the grid
-    grid = objective_grid()
-    if args.variants != "all":
-        want = {s.strip() for s in args.variants.split(",")}
-        grid = [c for c in grid if c["name"] in want]
     print(f"# ---- OBJECTIVE GRID ({len(grid)} cells x {args.epochs} epochs) ----")
 
     va_sets = set_index_lists(rec_va)
@@ -203,7 +228,9 @@ def main() -> int:
 
     for cell in grid:
         targets = record_targets(rec_tr, cell["soft"])
-        weights = record_lesion_weights(rec_tr) if cell["per_lesion"] else None
+        # weights are derived from the SAME targets the loss consumes — deriving them from the
+        # hard label while training on the ramp let a near miss out-pull a real hit by ~14x
+        weights = record_lesion_weights(rec_tr, targets) if cell["per_lesion"] else None
         model = B1Rescorer(d_in=d_in, d_model=128, hidden=256, depth=2)
         batches = set_batches(rec_tr, Ztr, seed=args.seed, labels=targets)
 
@@ -227,7 +254,8 @@ def main() -> int:
         spr = _report(rec_va, gt_va, b0_spread_probability(prob), cell["name"] + "+spread",
                       args.n_boot, with_headroom=False)
         rec = {**cell, "selected_epoch": payload["selected_epoch"],
-               "epochs_table": payload["epochs"], "raw": raw, "spread": spr}
+               "epochs_table": payload["epochs"], "raw": raw, "spread": spr,
+               "_prob": np.asarray(prob, dtype=float)}
         results.append(rec)
         mark = "  <-- DEPLOYED CELL" if cell["is_deployed"] else ""
         print(f"\n[{cell['name']}] epoch {payload['selected_epoch']}/{args.epochs}{mark}")
@@ -237,6 +265,22 @@ def main() -> int:
               f"per_vol_oracle {raw['headroom']['per_vol_oracle']:.4f}")
         print("  key_recall " + "  ".join(
             f"{k}:{raw['key_recall'][str(k)]:.3f}" for k in _KEY_FP))
+
+    # ------------------------------------------------- paired deltas vs B0 (the real test)
+    # Marginal CIs on 30 lesions are ~0.13 wide and say almost nothing. The PAIRED bootstrap
+    # resamples volumes once and scores both arms on that same resample, so the shared pool
+    # noise cancels — the same instrument [4.7] uses for the ladder.
+    paired = []
+    for cell in select_ci_cells(results, args.ci_top_k if args.n_boot_paired > 0 else 0):
+        prob = (cell["_prob"] if cell["raw"]["cpm"] >= cell["spread"]["cpm"]
+                else b0_spread_probability(cell["_prob"]))
+        pred = evaluate_variant(rec_va, prob, gt_va, seed_tag=cell["name"], n_boot=0)["pred"]
+        d = compare_variants(gt_va, pred, b0_res["pred"], cell["name"], "B0",
+                             n_boot=args.n_boot_paired)
+        paired.append(d)
+        print(f"\n# PAIRED {d['comparison']}: {d['delta']:+.4f} "
+              f"[{d['lo']:+.4f}, {d['hi']:+.4f}]  frac favouring = {d['frac_positive']:.3f} "
+              f"({args.n_boot_paired} draws)")
 
     # ---------------------------------------------------------------- verdict
     best = sorted(results, key=lambda r: -max(r["raw"]["cpm"], r["spread"]["cpm"]))
@@ -270,7 +314,10 @@ def main() -> int:
     dump_json({"seed": args.seed, "blocks": list(blocks), "d_in": d_in,
                "n_gt_lesions": int(len(gt_va)),
                "b0": b0, "b0_spread": b0s, "epochs": args.epochs,
-               "feature_names": names, "results": results},
+               "paired_vs_b0": paired, "feature_names": names,
+               # `_prob` is 2225 floats per cell — kept in memory for the paired bootstrap,
+               # dropped from the record so the json stays a readable artefact
+               "results": [{k: v for k, v in r.items() if k != "_prob"} for r in results]},
               out_root / f"objective_study_seed{args.seed}.json")
     return 0
 

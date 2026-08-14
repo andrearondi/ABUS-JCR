@@ -74,6 +74,46 @@ def test_lesion_weights_split_per_set_not_per_volume():
     assert record_lesion_weights(rec) == pytest.approx([1.0, 1.0])
 
 
+# --------------------------------------------------- composability with the soft ramp
+def test_soft_targets_do_not_leave_the_ignore_band_outweighing_real_hits():
+    """The defect that voided the four `soft_lesion` cells of the seed-0 [4.2b] run.
+
+    Weights were computed from the HARD label, so a true positive was cut to 1/n_pos while an
+    ignore-band row — which under the ramp carries a PARTIAL POSITIVE target — kept weight
+    1.0. The model was told to prefer near-misses over hits; 3 of those 4 cells peaked at
+    epoch 0. A near miss must never out-weight a hit.
+    """
+    rec = _rec([0.9, 0.9, 0.20, 0.0], ["pos", "pos", "ignore", "neg"], sets=[1, 1, 1, 1])
+    t = record_targets(rec, soft=True)
+    w = record_lesion_weights(rec, targets=t)
+    assert w[2] <= w[0], "the near miss out-weights a true hit"
+    # what actually drives the fit is weight x target — the "positive pull". Under the
+    # pre-fix weights a t=0.9 band row pulled ~14x harder than a hit.
+    assert w[2] * t[2] < w[0] * t[0], "the near miss out-PULLS a true hit"
+
+
+def test_soft_weights_reduce_to_the_hard_case_when_the_ramp_is_not_used():
+    rec = _rec([0.9, 0.9, 0.20, 0.0], ["pos", "pos", "ignore", "neg"], sets=[1, 1, 1, 1])
+    hard = record_lesion_weights(rec)
+    via_targets = record_lesion_weights(rec, targets=record_targets(rec, soft=False))
+    assert via_targets == pytest.approx(hard)
+
+
+def test_soft_weights_still_give_one_set_one_lesions_worth_of_positive_credit():
+    """Positive credit is normalised over the set's total target mass, ramp rows included."""
+    rec = _rec([0.9, 0.20, 0.0], ["pos", "ignore", "neg"], sets=[1, 1, 1])
+    t = record_targets(rec, soft=True)                       # [1.0, 0.5, 0.0]
+    w = record_lesion_weights(rec, targets=t)
+    assert float((w * t).sum()) == pytest.approx(1.0)
+    assert w[2] == pytest.approx(1.0), "a pure negative keeps unit weight"
+
+
+def test_an_all_negative_set_is_untouched_under_soft_targets():
+    rec = _rec([0.0, 0.0], ["neg", "neg"], sets=[1, 1])
+    w = record_lesion_weights(rec, targets=record_targets(rec, soft=True))
+    assert w == pytest.approx([1.0, 1.0])
+
+
 # ----------------------------------------------------------------------- spread diagnostic
 def test_threshold_occupancy_counts_the_sweep_bins_the_scores_actually_reach():
     """The oracle sweeps np.arange(0, 1, 0.005); a saturated score visits almost none."""
