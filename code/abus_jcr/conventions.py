@@ -498,7 +498,22 @@ RESC_GEOM_EPS        = 1e-6         # MUST equal probe/pool_diag.EPS (byte-ident
 RESC_LOSS_RANK       = "smooth_ap"  # Phase-0a single-lesion dominance (99/100 Train, 29/30 Val)
                                     # -> the RS "sort positives by IoU" term is inert; DO NOT use RS.
 RESC_SMOOTH_AP_TAU   = 0.01         # sigmoid temperature of the rank indicator
-RESC_FOCAL_GAMMA     = 2.0
+# PROMOTED 2026-08-15 by `[4.2c]` (3 seeds, pre-specified 2x2): 2.0 -> 0.0. Focal loss is
+# deliberately NOT a proper scoring rule; plain weighted BCE is, and `[F.8]` puts 78.7 % of the
+# headroom in cross-volume CALIBRATION — the quantity a proper scoring rule preserves and focal
+# discards. Measured `gamma=0 - gamma=2` under per-lesion weighting: +0.0351 / +0.0474 / +0.0297
+# on seeds 0/1/2 (3/3, every value above the study's ~0.021 reproducibility floor).
+# A DATED, LABELLED forking path: chosen after seeing `[4.2]`. RESULTS_PHASE_4 `[4.2c]` READ-OFF.
+RESC_FOCAL_GAMMA     = 0.0
+# PROMOTED 2026-08-15 by `[4.2c]`. `det_score` collapses duplicate hits on one GT to ONE TP
+# (Phase 0a: "duplicates are free"), but the train pool carries a mean 15.6 positives per
+# TP-bearing volume, so a plain mean lets a well-covered lesion out-weight a sparsely-covered one
+# by its duplicate count while both count once to CPM. Positives in a SET now share 1.0 of
+# positive credit (`objective.record_lesion_weights`). Measured vs per-candidate at gamma=0:
+# +0.0767 / +0.0069 / +0.1035 (3/3). Combined with gamma=0 this is +0.0581 over the previously
+# deployed objective on 3/3 seeds — which is what it was promoted for. It does NOT beat B0
+# (-0.0215 mean); see the `[4.2c]` READ-OFF and the re-based exit check 4.
+RESC_PER_LESION_WEIGHTS = True
 RESC_CE_SEARCH       = ({"alpha": 0.25, "lr": 1e-3}, {"alpha": 0.50, "lr": 1e-3},
                         {"alpha": 0.25, "lr": 3e-4}, {"alpha": 0.50, "lr": 3e-4})   # 4 trials
 RESC_LAMBDA_SEARCH   = (0.1, 0.3, 1.0, 3.0)   # 4 trials for the ranking variants (lr/alpha = B2's)
@@ -615,9 +630,19 @@ if AXIS_PROFILE == "measured":
     # d2 = sweep is unchanged by the correction, so every z-denominated constant
     # (LINK_MIN_TUBE_LEN, LINK_MAX_TUBE_ZSPAN, LINK_MAX_Z_GAP) is expected to
     # re-derive UNCHANGED; the in-plane one is not.
-    LINK_IOU              = 0.30
-    LINK_MAX_Z_GAP        = 1
-    LINK_MIN_TUBE_LEN     = 8
+    LINK_IOU              = 0.30    # [I3.2 FROZEN] 0.2 neutral but larger pool; 0.4 loses 3/100
+    LINK_MAX_Z_GAP        = 1       # [I3.2 FROZEN] strict optimum: 0 and 2 each lose 2/100
+    # [I3.2 FROZEN 2026-08-16] 8 -> 10. **P4's one genuine miss.** 10 is the largest
+    # recall-neutral value on the pooled 5 OOF folds (92/100, identical to the len-8 row)
+    # and it cuts the pool 128.2 -> 105.1 (-18%); 12 drops to 90/100. It is neutral on every
+    # fold INDIVIDUALLY too, so this is not a pooling artefact.
+    # WHY a z-denominated constant moved when d2 did not: this one is derived from DETECTOR
+    # TUBE LENGTHS, not from GT z-extent. On this substrate [I2.7] measures TP slice_count
+    # p10 = 16 against FP p10 = 8, so a floor of 10 sits in the gap -- it deletes short FP
+    # tubes and cannot reach the TP distribution. The axis is unchanged; the detections are
+    # not. `LINK_MAX_TUBE_ZSPAN` / `LINK_MAX_Z_GAP`, which ARE derived from GT z-extent, did
+    # re-derive unchanged (182 / 1), so P4 holds in the half of its premise that was sound.
+    LINK_MIN_TUBE_LEN     = 10
     LINK_MAX_TUBE_ZSPAN   = 182     # 1.8 x Train-GT z-extent p99 (101.11) -- z is unchanged
     # Deployed 342 = 1.5 x an in-plane extent p99 of 228 iso px, which [P3U2.PD] already
     # noticed is ">= the volume's full lateral width 341, i.e. laterally a no-op" -- a
