@@ -46,6 +46,7 @@ from abus_jcr.rescore.datasets import CropDataset
 from abus_jcr.rescore.encoder import build_encoder
 from abus_jcr.probe.pool_diag import best_balacc
 from abus_jcr.rescore.evaluate import evaluate_variant
+from abus_jcr.rescore.objective import record_lesion_weights
 from abus_jcr.rescore.setmodel import B1Rescorer
 from abus_jcr.rescore.train import pretrain_encoder
 
@@ -117,13 +118,22 @@ def main() -> int:
 
     d_app = int(C.RESC_D_APP)
     d_in = d_app + Ztr.shape[1]
-    enc = build_encoder(args.encoder, d_app=d_app)
-    head = B1Rescorer(d_in=d_in, d_model=128, hidden=args.b1_hidden, depth=2)
-    n_enc = sum(p.numel() for p in enc.parameters())
-    n_head = sum(p.numel() for p in head.parameters())
-    print(f"# encoder {args.encoder}: {n_enc/1e6:.2f} M params; B1Head: {n_head/1e3:.1f} k params")
 
-    def evaluate_epoch(epoch: int) -> dict:
+    # a FACTORY: pretrain_encoder seeds before invoking it, so the weights cannot inherit this
+    # process's RNG state (rescore/train.resolve_model — worth 0.021 CPM when got backwards)
+    def model_factory():
+        return (build_encoder(args.encoder, d_app=d_app),
+                B1Rescorer(d_in=d_in, d_model=128, hidden=args.b1_hidden, depth=2))
+
+    _e, _h = model_factory()
+    n_enc = sum(p.numel() for p in _e.parameters())
+    n_head = sum(p.numel() for p in _h.parameters())
+    del _e, _h
+    print(f"# encoder {args.encoder}: {n_enc/1e6:.2f} M params; B1Head: {n_head/1e3:.1f} k params")
+    print(f"# [4.2c] objective: gamma={C.RESC_FOCAL_GAMMA} alpha={args.alpha} "
+          f"per_lesion_weights={C.RESC_PER_LESION_WEIGHTS}")
+
+    def evaluate_epoch(epoch: int, enc, head) -> dict:
         enc.eval(); head.eval()
         with torch.no_grad():
             embs = []
@@ -147,9 +157,10 @@ def main() -> int:
                 "val_balacc": float(ba)}
 
     out_dir = encoder_dir(args, args.seed)
-    result = pretrain_encoder(enc, head, loader, evaluate_epoch, out_dir, seed=args.seed,
+    row_w = record_lesion_weights(rec_tr) if C.RESC_PER_LESION_WEIGHTS else None
+    result = pretrain_encoder(model_factory, loader, evaluate_epoch, out_dir, seed=args.seed,
                               epochs=args.epochs, lr=args.lr, alpha=args.alpha,
-                              device=args.device)
+                              device=args.device, row_weights=row_w)
 
     best = result["epochs"][result["selected_epoch"]]
     print(f"\n# [4.3] seed {args.seed}: selected epoch {result['selected_epoch']} "

@@ -231,23 +231,24 @@ def main() -> int:
         # weights are derived from the SAME targets the loss consumes — deriving them from the
         # hard label while training on the ramp let a near miss out-pull a real hit by ~14x
         weights = record_lesion_weights(rec_tr, targets) if cell["per_lesion"] else None
-        model = B1Rescorer(d_in=d_in, d_model=128, hidden=256, depth=2)
         batches = set_batches(rec_tr, Ztr, seed=args.seed, labels=targets)
 
-        def evaluate_epoch(epoch: int, _m=model) -> dict:
-            prob = score_pool(_m, Zva32, va_coord, va_length, va_sets,
+        def evaluate_epoch(epoch: int, model) -> dict:
+            prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
                               n_rows=len(rec_va), device=args.device)
             r = evaluate_variant(rec_va, prob, gt_va, seed_tag=cell["name"], n_boot=0)
-            _m.train()
+            model.train()
             return {"val_cpm": r["cpm"], "val_ceiling": r["ceiling"],
                     "val_ci_lo": float("nan"), "val_ci_hi": float("nan")}
 
         payload = train_set_variant(
-            model, batches, evaluate_epoch, out_root / cell["name"], seed=args.seed,
+            lambda: B1Rescorer(d_in=d_in, d_model=128, hidden=256, depth=2),
+            batches, evaluate_epoch, out_root / cell["name"], seed=args.seed,
             w_rank=0.0, lam=1.0, alpha=float(cell["alpha"]), lr=args.lr,
             epochs=args.epochs, device=args.device, gamma=float(cell["gamma"]),
             soft_targets=bool(cell["soft"]), row_weights=weights)
 
+        model = payload.pop("model")
         prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
                           n_rows=len(rec_va), device=args.device)
         raw = _report(rec_va, gt_va, prob, cell["name"], args.n_boot)

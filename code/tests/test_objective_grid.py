@@ -27,12 +27,24 @@ def test_grid_is_the_full_factorial_of_the_declared_factors():
 
 
 def test_the_deployed_objective_is_in_the_grid_as_the_reference_cell():
-    """[4.3]/[4.6] ship gamma=2, hard labels + ignore mask, per-candidate weighting."""
+    """Whatever `conventions` currently ships must appear in the grid, as the control."""
     ref = [v for v in objective_grid()
-           if v["gamma"] == C.RESC_FOCAL_GAMMA and not v["soft"] and not v["per_lesion"]
-           and v["alpha"] == 0.25]
+           if v["gamma"] == C.RESC_FOCAL_GAMMA and not v["soft"]
+           and v["per_lesion"] == bool(C.RESC_PER_LESION_WEIGHTS) and v["alpha"] == 0.25]
     assert len(ref) == 1, "the deployed cell must appear exactly once — it is the control"
     assert ref[0]["is_deployed"] is True
+
+
+def test_the_grid_still_spans_both_gammas_after_the_promotion():
+    """A promotion moved gamma onto one arm; reading the factor values from `conventions`
+    would have collapsed the axis and silently turned the study into a 1-arm comparison."""
+    assert set(OBJECTIVE_FACTORS["gamma"]) == {2.0, 0.0}
+
+
+def test_the_confirmation_2x2_survives_the_promotion():
+    names = {v["name"] for v in objective_grid()}
+    from abus_jcr.rescore.objective import CONFIRMATION_CELLS
+    assert set(CONFIRMATION_CELLS) <= names
 
 
 def test_exactly_one_cell_is_flagged_deployed():

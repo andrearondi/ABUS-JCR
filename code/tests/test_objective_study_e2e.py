@@ -75,18 +75,19 @@ def _train_one(rec, gt, cell, tmp_path, epochs=2):
                                 use_blocks=("abs_geom", "score_stats", "tube_geom", "rank"),
                                 iso_shape_by_pid=iso)
     Z = np.ascontiguousarray(Z, dtype=np.float32)
-    model = B1Rescorer(d_in=Z.shape[1], d_model=32, hidden=32, depth=2)
     coord, length = boxes_of(rec)
     sets = set_index_lists(rec)
 
     payload = train_set_variant(
-        model,
+        lambda: B1Rescorer(d_in=Z.shape[1], d_model=32, hidden=32, depth=2),
         set_batches(rec, Z, seed=0, labels=record_targets(rec, cell["soft"])),
-        lambda ep: {"val_cpm": 0.5, "val_ceiling": 1.0},
+        lambda ep, m: {"val_cpm": 0.5, "val_ceiling": 1.0},
         tmp_path / cell["name"], seed=0, w_rank=0.0, lam=1.0, alpha=float(cell["alpha"]),
         epochs=epochs, device="cpu", gamma=float(cell["gamma"]),
         soft_targets=bool(cell["soft"]),
-        row_weights=record_lesion_weights(rec) if cell["per_lesion"] else None)
+        row_weights=(record_lesion_weights(rec, record_targets(rec, cell["soft"]))
+                     if cell["per_lesion"] else None))
+    model = payload.pop("model")           # the trainer builds it now — seeded first
     prob = score_pool(model, Z, coord, length, sets, n_rows=len(rec), device="cpu")
     return payload, prob
 
@@ -104,30 +105,42 @@ def test_every_grid_cell_trains_and_produces_a_scorable_probability(tmp_path):
         assert 0.0 <= res["cpm"] <= 1.0
 
 
+def _cell(name):
+    """Select by NAME, never via `is_deployed` — that flag tracks `conventions` and moved when
+    [4.2c] promoted an objective, which would silently make a one-factor contrast compare a
+    cell against itself."""
+    return next(c for c in objective_grid() if c["name"] == name)
+
+
 def test_the_soft_cell_actually_trains_on_the_ignore_band(tmp_path):
     """The whole point of the ramp: an IoU-0.20 row must move the weights.
 
-    Same seed, same data, same everything except the target — if the ignore band were still
-    masked the two runs would be identical.
+    Matched on every other factor, so the ONLY difference is the target. If the ignore band
+    were still masked out the two runs would be identical.
     """
     rec = _record()
     gt = _gt(rec)
-    hard = next(c for c in objective_grid() if c["is_deployed"])
-    soft = next(c for c in objective_grid()
-                if c["soft"] and not c["per_lesion"]
-                and c["gamma"] == hard["gamma"] and c["alpha"] == hard["alpha"])
-    _, p_hard = _train_one(rec, gt, hard, tmp_path, epochs=3)
-    _, p_soft = _train_one(rec, gt, soft, tmp_path, epochs=3)
+    _, p_hard = _train_one(rec, gt, _cell("g2_a0.25_hard_cand"), tmp_path, epochs=3)
+    _, p_soft = _train_one(rec, gt, _cell("g2_a0.25_soft_cand"), tmp_path, epochs=3)
     assert not np.allclose(p_hard, p_soft)
 
 
 def test_per_lesion_weighting_changes_the_fit(tmp_path):
+    """Matched on gamma, alpha and target — only the weighting differs."""
     rec = _record()
     gt = _gt(rec)
-    base = next(c for c in objective_grid() if c["is_deployed"])
-    weighted = next(c for c in objective_grid()
-                    if c["per_lesion"] and not c["soft"]
-                    and c["gamma"] == base["gamma"] and c["alpha"] == base["alpha"])
-    _, p_base = _train_one(rec, gt, base, tmp_path, epochs=3)
-    _, p_w = _train_one(rec, gt, weighted, tmp_path, epochs=3)
+    _, p_base = _train_one(rec, gt, _cell("g2_a0.25_hard_cand"), tmp_path, epochs=3)
+    _, p_w = _train_one(rec, gt, _cell("g2_a0.25_hard_lesion"), tmp_path, epochs=3)
     assert not np.allclose(p_base, p_w)
+
+
+def test_the_promoted_objective_is_reachable_by_name(tmp_path):
+    """[4.2c] promoted g0_a0.25_hard_lesion; the ladder trains under it via `conventions`."""
+    from abus_jcr import conventions as C
+
+    promoted = _cell("g0_a0.25_hard_lesion")
+    assert promoted["is_deployed"] is True
+    assert C.RESC_FOCAL_GAMMA == 0.0 and C.RESC_PER_LESION_WEIGHTS is True
+    rec = _record()
+    _, prob = _train_one(rec, _gt(rec), promoted, tmp_path, epochs=2)
+    assert np.isfinite(prob).all() and ((prob >= 0.0) & (prob < 1.0)).all()

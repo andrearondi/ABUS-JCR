@@ -39,7 +39,33 @@ from .losses import rescorer_loss
 from .variants import select_epoch_by_val_cpm
 
 __all__ = ["cosine_lr", "make_optimizer", "pretrain_encoder", "train_set_variant",
-           "write_epoch_table", "select_epoch_by_val_cpm"]
+           "write_epoch_table", "select_epoch_by_val_cpm", "resolve_model"]
+
+
+def resolve_model(model_or_factory, seed: int, seed_fn=None):
+    """Seed **first**, then construct. Never the other way round.
+
+    Callers used to build the module and *then* hand it to a trainer that seeded on entry, so a
+    model's initial weights inherited whatever global RNG state the caller happened to leave
+    behind. Measured cost: `[4.2b]` and `[4.2c]` scored the same cell on the same seed and the
+    same data at **0.5796** and **0.6006** (+0.0210) because the reference block's bootstrap
+    draws changed between the runs. Only the FIRST model built in a run is affected — every
+    later one is constructed after a ``seed_everything`` plus deterministic training — which is
+    exactly the pattern that was observed. The same shape sat in ``run_variant_trial``, so it
+    reached `[4.5]`, `[4.6]` and `[4.8]` too.
+
+    Pass a zero-argument **factory** and the ordering cannot be got wrong. A pre-built module is
+    still accepted for compatibility, but it *cannot* be made reproducible — its initialisation
+    has already happened — so every caller in this repo passes a factory.
+
+    ``seed_fn`` exists so the ordering contract is testable without torch; it defaults to
+    ``detect.train.seed_everything``, which is the project-wide one (python/numpy/torch plus
+    deterministic cudnn), so the rescorer can never drift from the detector.
+    """
+    if seed_fn is None:
+        from ..detect.train import seed_everything as seed_fn        # noqa: N806 (lazy: torch)
+    seed_fn(int(seed))
+    return model_or_factory() if callable(model_or_factory) else model_or_factory
 
 
 def cosine_lr(base_lr: float, epoch: int, total_epochs: int) -> float:
@@ -67,25 +93,33 @@ def write_epoch_table(rows: Sequence[Dict], out_dir) -> Path:
     return path
 
 
-def pretrain_encoder(encoder, head, train_loader, evaluate_epoch: Callable[[int], Dict],
+def pretrain_encoder(model_factory, train_loader, evaluate_epoch: Callable[[int], Dict],
                      out_dir, seed: int, epochs: Optional[int] = None,
                      opt_cfg: Optional[Dict] = None, lr: Optional[float] = None,
-                     alpha: float = 0.25, device: str = "cuda") -> Dict:
+                     alpha: float = 0.25, device: str = "cuda",
+                     gamma: Optional[float] = None, row_weights=None) -> Dict:
     """[4.3] Train ``CandidateEncoder + B1Head`` end to end — this run **is** rung B1.
+
+    ``model_factory`` is a zero-argument callable returning ``(encoder, head)``. It is invoked
+    **after** seeding (:func:`resolve_model`) so the weights do not inherit the caller's RNG
+    state — see that function for the measured cost of getting this backwards.
 
     ``train_loader`` yields ``(crops, rest, labels, rows)``; augmentation lives in the
     dataset (Inv. 13: pretraining only). ``evaluate_epoch(epoch)`` must return
     ``{"val_cpm": float, ...}`` computed through the official oracle on the paired val seed
     pool — the ONLY selection signal.
 
-    Saves every epoch to ``out_dir/epoch{NN}.pt`` and returns the epoch table plus the
-    post-hoc selected epoch.
+    ``gamma`` / ``row_weights`` carry the `[4.2c]`-promoted objective; both default to the
+    ``conventions`` values, so the deployed behaviour is whatever is recorded there.
+    ``row_weights`` is indexed per RECORD ROW and gathered with the loader's own ``rows``.
+
+    Saves every epoch to ``out_dir/epoch{NN}.pt`` and returns the epoch table, the post-hoc
+    selected epoch, and the constructed ``encoder``/``head``.
     """
+    import numpy as np
     import torch
 
-    from ..detect.train import seed_everything
-
-    seed_everything(int(seed))
+    encoder, head = resolve_model(model_factory, seed)
     epochs = int(C.RESC_ENC_EPOCHS if epochs is None else epochs)
     opt_cfg = dict(C.RESC_ENC_OPT if opt_cfg is None else opt_cfg)
     base_lr = float(opt_cfg["lr"] if lr is None else lr)
@@ -101,16 +135,25 @@ def pretrain_encoder(encoder, head, train_loader, evaluate_epoch: Callable[[int]
             g["lr"] = cosine_lr(base_lr, ep, epochs)
         model.train()
         tot, nb = 0.0, 0
-        for crops, rest, labels, _rows in train_loader:
+        # NB `batch_rows`, not `rows` — `rows` is the epoch table being accumulated below
+        for crops, rest, labels, batch_rows in train_loader:
             crops = crops.to(device).float()
             rest = rest.to(device).float()
             labels = labels.to(device).float()
             a = model["encoder"](crops)
             feats = torch.cat([a, rest], dim=-1)[:, None, :]        # a set of ONE (B1)
             logits = model["head"](feats).squeeze(1)
+            # the loader shuffles CANDIDATES, so the per-lesion weight is gathered per row
+            bw = None
+            if row_weights is not None:
+                idx = np.asarray(batch_rows.cpu() if hasattr(batch_rows, "cpu")
+                                 else batch_rows, dtype=int)
+                bw = torch.as_tensor(
+                    np.asarray(row_weights, dtype=np.float32)[idx][None, :]).to(device)
             # B1 is a CE rung: w_rank = 0 (a singleton set carries no ranking information)
             loss, _ = rescorer_loss(logits[None, :], labels[None, :], None,
-                                    w_rank=0.0, lam=1.0, alpha=float(alpha))
+                                    w_rank=0.0, lam=1.0, alpha=float(alpha),
+                                    gamma=gamma, bce_weights=bw)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -120,7 +163,7 @@ def pretrain_encoder(encoder, head, train_loader, evaluate_epoch: Callable[[int]
         torch.save({"epoch": ep, "seed": int(seed), "encoder": encoder.state_dict(),
                     "head": head.state_dict(), "alpha": float(alpha), "lr": base_lr,
                     "encoder_name": C.RESC_ENCODER}, ckpt)
-        metrics = evaluate_epoch(ep)
+        metrics = evaluate_epoch(ep, encoder, head)
         rows.append({"epoch": ep, "train_loss": tot / max(1, nb), **metrics})
         print(f"  [enc seed{seed}] epoch {ep:02d} loss {rows[-1]['train_loss']:.4f} "
               f"val_cpm {metrics.get('val_cpm', float('nan')):.4f}", flush=True)
@@ -129,10 +172,12 @@ def pretrain_encoder(encoder, head, train_loader, evaluate_epoch: Callable[[int]
     chosen = select_epoch_by_val_cpm([r["epoch"] for r in rows], [r["val_cpm"] for r in rows])
     return {"epochs": rows, "selected_epoch": int(chosen),
             "selected_ckpt": str(out_dir / f"epoch{chosen:02d}.pt"),
-            "selection_rule": f"earliest epoch within {C.RESC_SELECT_CPM_TOL} of max val_cpm"}
+            "selection_rule": f"earliest epoch within {C.RESC_SELECT_CPM_TOL} of max val_cpm",
+            "encoder": encoder, "head": head}
 
 
-def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: Callable[[int], Dict],
+def train_set_variant(model_factory, batches: Callable[[int], object],
+                      evaluate_epoch: Callable[[int], Dict],
                       out_dir, seed: int, w_rank: float, lam: float, alpha: float,
                       lr: Optional[float] = None, epochs: Optional[int] = None,
                       opt_cfg: Optional[Dict] = None, device: str = "cuda",
@@ -140,8 +185,12 @@ def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: C
                       row_weights=None) -> Dict:
     """[4.6] Train ONE ``(variant, seed, trial)`` over the cached embeddings.
 
-    ``batches(epoch)`` yields dicts from ``datasets.collate_sets`` (already padded + masked);
-    the batching unit is a SET, ``RESC_SET_BATCH_SETS`` sets per step. Sets with no positive
+    ``model_factory`` is a zero-argument callable; it is invoked **after** seeding
+    (:func:`resolve_model`), which is what makes a rung reproducible across runs.
+
+    ``evaluate_epoch(epoch, model)`` receives the module because the trainer, not the caller,
+    now constructs it. ``batches(epoch)`` yields dicts from ``datasets.collate_sets`` (already
+    padded + masked); the batching unit is a SET, ``RESC_SET_BATCH_SETS`` sets per step. Sets with no positive
     are KEPT — they are the all-negative calibration anchors ``focal_bce`` needs.
 
     ``gamma`` / ``soft_targets`` / ``row_weights`` are the `[4.2b]` objective-alignment knobs
@@ -152,9 +201,8 @@ def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: C
     import torch
 
     from .datasets import batch_row_weights
-    from ..detect.train import seed_everything
 
-    seed_everything(int(seed))
+    model = resolve_model(model_factory, seed)
     epochs = int(C.RESC_SET_EPOCHS if epochs is None else epochs)
     opt_cfg = dict(C.RESC_SET_OPT if opt_cfg is None else opt_cfg)
     base_lr = float(opt_cfg["lr"] if lr is None else lr)
@@ -189,7 +237,7 @@ def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: C
         torch.save({"epoch": ep, "seed": int(seed), "model": model.state_dict(),
                     "w_rank": float(w_rank), "lam": float(lam), "alpha": float(alpha),
                     "lr": base_lr}, out_dir / f"epoch{ep:02d}.pt")
-        metrics = evaluate_epoch(ep)
+        metrics = evaluate_epoch(ep, model)
         rows.append({"epoch": ep, "train_loss": tot / max(1, nb),
                      "train_rank": rank_tot / max(1, nb), "train_bce": bce_tot / max(1, nb),
                      **metrics})
@@ -204,7 +252,9 @@ def train_set_variant(model, batches: Callable[[int], object], evaluate_epoch: C
                "selected_val_cpm": float(rows[chosen]["val_cpm"]),
                "hyperparameters": {"w_rank": float(w_rank), "lam": float(lam),
                                    "alpha": float(alpha), "lr": base_lr, "epochs": epochs},
-               "selection_rule": f"earliest epoch within {C.RESC_SELECT_CPM_TOL} of max val_cpm"}
+               "selection_rule": f"earliest epoch within {C.RESC_SELECT_CPM_TOL} of max val_cpm",
+               "model": model}
     (out_dir / "selection.json").write_text(json.dumps(
-        {k: v for k, v in payload.items() if k != "epochs"}, indent=2, sort_keys=True))
+        {k: v for k, v in payload.items() if k not in ("epochs", "model")},
+        indent=2, sort_keys=True))
     return payload

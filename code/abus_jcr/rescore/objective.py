@@ -54,16 +54,22 @@ __all__ = ["OBJECTIVE_FACTORS", "DEPLOYED_CELL", "CONFIRMATION_CELLS", "objectiv
 ORACLE_SECONDS_PER_CALL = 7.6
 
 #: The factorial axes. Order fixes the variant name, so a name is readable without a legend.
+#: Values are LITERAL, not read from ``conventions`` — the grid must keep spanning both arms
+#: after a promotion moves the deployed value onto one of them (2026-08-15: gamma 2.0 -> 0.0,
+#: which would otherwise have collapsed this axis to (0.0, 0.0)).
 OBJECTIVE_FACTORS: Dict[str, Tuple] = {
-    "gamma": (C.RESC_FOCAL_GAMMA, 0.0),   # focal (deployed) vs plain BCE = a proper scoring rule
+    "gamma": (2.0, 0.0),                  # focal vs plain BCE = a proper scoring rule
     "alpha": (0.25, 0.50),                # deployed vs positives-not-down-weighted
     "soft": (False, True),                # ignore-band hole vs ramp
     "per_lesion": (False, True),          # per-candidate vs metric's own unit of credit
 }
 
-#: The cell `[4.3]`/`[4.6]` actually ship — the control the study is read against.
+#: The cell `[4.3]`/`[4.6]` actually ship — the control the study is read against. Tracks
+#: ``conventions`` so it follows a promotion automatically. **Was** ``g2_a0.25_hard_cand``; since
+#: `[4.2c]` (2026-08-15) it is ``g0_a0.25_hard_lesion``, so any future re-run compares against
+#: what is deployed *then*, not against a stale label.
 DEPLOYED_CELL: Dict = {"gamma": C.RESC_FOCAL_GAMMA, "alpha": 0.25,
-                       "soft": False, "per_lesion": False}
+                       "soft": False, "per_lesion": bool(C.RESC_PER_LESION_WEIGHTS)}
 
 #: `[4.2c]`'s 2x2: the two factors that moved on seed 0, at the deployed alpha, hard labels.
 #: `soft` is dropped (its clean read inside the per-candidate column is +0.0023 = nil, and its

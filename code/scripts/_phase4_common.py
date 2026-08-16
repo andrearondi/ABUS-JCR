@@ -287,6 +287,7 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
     import torch
 
     from abus_jcr.rescore.evaluate import evaluate_variant, score_pool
+    from abus_jcr.rescore.objective import record_lesion_weights
     from abus_jcr.rescore.setmodel import build_rescorer
     from abus_jcr.rescore.train import train_set_variant
     from abus_jcr.rescore.variants import VARIANTS, match_b1_capacity
@@ -300,8 +301,13 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
         target = set_module_params(d_in, capacity, use_geometry=False)
         hidden = match_b1_capacity(d_in, d_model, target)
         print(f"# fairness: B1 hidden {hidden} matched to the set module's {target} params")
-    model = build_rescorer(variant, d_in, capacity, hidden=hidden, geom_mechanism=geom_mechanism)
-    n_params = int(sum(p.numel() for p in model.parameters()))
+    # a FACTORY, not a module: train_set_variant seeds before invoking it, so the weights do not
+    # inherit whatever RNG state this process happened to be in (rescore/train.resolve_model)
+    def model_factory():
+        return build_rescorer(variant, d_in, capacity, hidden=hidden,
+                              geom_mechanism=geom_mechanism)
+
+    n_params = int(sum(p.numel() for p in model_factory().parameters()))
     print(f"# {variant} seed{seed} {trial}: d_in={d_in}, capacity={_tag}, params={n_params}")
 
     batches = set_batches(inputs["rec_tr"], inputs["Ztr"], seed=seed)
@@ -309,7 +315,7 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
     va_coord, va_length = boxes_of(inputs["rec_va"])
     Zva32 = np.ascontiguousarray(inputs["Zva"], dtype=np.float32)
 
-    def evaluate_epoch(epoch: int) -> Dict:
+    def evaluate_epoch(epoch: int, model) -> Dict:
         prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
                           n_rows=len(inputs["rec_va"]), device=device)
         res = evaluate_variant(inputs["rec_va"], prob, inputs["gt_va"],
@@ -318,9 +324,14 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
         return {"val_cpm": res["cpm"], "val_ceiling": res["ceiling"],
                 "val_ci_lo": res["ci"]["lo"], "val_ci_hi": res["ci"]["hi"]}
 
-    payload = train_set_variant(model, batches, evaluate_epoch, out_dir, seed=seed,
+    # the promoted [4.2c] objective: gamma and the per-lesion weights come from `conventions`,
+    # so every rung of the ladder trains under the objective that is RECORDED as deployed
+    row_w = (record_lesion_weights(inputs["rec_tr"]) if C.RESC_PER_LESION_WEIGHTS else None)
+    payload = train_set_variant(model_factory, batches, evaluate_epoch, out_dir, seed=seed,
                                 w_rank=trial["w_rank"], lam=trial["lam"], alpha=trial["alpha"],
-                                lr=trial["lr"], epochs=epochs, device=device)
+                                lr=trial["lr"], epochs=epochs, device=device,
+                                row_weights=row_w)
+    payload.pop("model", None)          # a torch module; the checkpoint on disk is the artefact
     payload.update({"variant": variant, "seed": int(seed), "capacity": list(capacity),
                     "params": n_params, "b1_hidden": hidden, "d_in": d_in,
                     "use_blocks": list(use_blocks),
