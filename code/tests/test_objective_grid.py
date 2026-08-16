@@ -120,6 +120,15 @@ def test_soft_weights_still_give_one_set_one_lesions_worth_of_positive_credit():
     assert w[2] == pytest.approx(1.0), "a pure negative keeps unit weight"
 
 
+def test_a_set_with_one_positive_gets_unit_weights():
+    """Correct, and worth pinning because it is a trap for fixtures: with a single positive
+    ``S = 1``, so per-lesion weighting is the exact IDENTITY. A synthetic pool built one-TP-per-
+    volume therefore cannot distinguish the two weightings at all — which is precisely how a
+    vacuous [4.2d.0] e2e assertion slipped through to the server on 2026-08-16."""
+    rec = _rec([0.9, 0.0, 0.0], ["pos", "neg", "neg"], sets=[1, 1, 1])
+    assert record_lesion_weights(rec) == pytest.approx([1.0, 1.0, 1.0])
+
+
 def test_an_all_negative_set_is_untouched_under_soft_targets():
     rec = _rec([0.0, 0.0], ["neg", "neg"], sets=[1, 1])
     w = record_lesion_weights(rec, targets=record_targets(rec, soft=True))

@@ -23,13 +23,22 @@ from abus_jcr.rescore.setmodel import B1Rescorer          # noqa: E402  (needs t
 from abus_jcr.rescore.train import train_set_variant      # noqa: E402
 
 
+#: Positives PER SET. Must be >= 2, and this is load-bearing rather than cosmetic: with one
+#: positive per set ``S = 1`` and ``record_lesion_weights`` returns all-ones, i.e. per-lesion
+#: weighting becomes the exact identity and no test can tell the two cells apart. The real train
+#: pool averages **15.6** duplicate hits per TP-bearing volume, which is the whole reason the
+#: weighting exists — the fixture has to reproduce that shape, not just the label vocabulary.
+_POS_PER_SET = 3
+
+
 def _record(n_per_vol=9, vols=(100, 101, 102), seed=0):
     rng = np.random.default_rng(seed)
     n = n_per_vol * len(vols)
+    n_neg = n_per_vol - _POS_PER_SET - 1
     lab, iou = [], []
-    for _ in vols:                       # one TP, one ignore-band near miss, rest negatives
-        lab += ["pos"] + ["ignore"] + ["neg"] * (n_per_vol - 2)
-        iou += [0.55, 0.20] + list(rng.uniform(0.0, 0.05, n_per_vol - 2))
+    for _ in vols:            # duplicate TPs on ONE lesion, one ignore-band near miss, then FPs
+        lab += ["pos"] * _POS_PER_SET + ["ignore"] + ["neg"] * n_neg
+        iou += [0.55, 0.48, 0.61][:_POS_PER_SET] + [0.20] + list(rng.uniform(0.0, 0.05, n_neg))
     return pd.DataFrame({
         "public_id": np.repeat(list(vols), n_per_vol),
         "candidate_id": [f"full_seed0:{i}" for i in range(n)],
@@ -54,8 +63,13 @@ def _record(n_per_vol=9, vols=(100, 101, 102), seed=0):
 
 
 def _gt(rec):
-    """One GT per volume, placed on each volume's `pos` row so the oracle finds a hit."""
-    rows = rec[rec["label"] == "pos"]
+    """ONE GT per volume, on that volume's FIRST `pos` row.
+
+    The other positives are duplicate hits on the same lesion — which is what the pool really
+    looks like, and what makes ``det_score``'s "duplicates are free" collapse (and therefore
+    per-lesion weighting) meaningful here.
+    """
+    rows = rec[rec["label"] == "pos"].groupby("public_id", sort=False).head(1)
     return pd.DataFrame({
         "public_id": rows["public_id"].to_numpy(),
         "coordX": rows["coordX"].to_numpy(), "coordY": rows["coordY"].to_numpy(),
@@ -123,6 +137,17 @@ def test_the_soft_cell_actually_trains_on_the_ignore_band(tmp_path):
     _, p_hard = _train_one(rec, gt, _cell("g2_a0.25_hard_cand"), tmp_path, epochs=3)
     _, p_soft = _train_one(rec, gt, _cell("g2_a0.25_soft_cand"), tmp_path, epochs=3)
     assert not np.allclose(p_hard, p_soft)
+
+
+def test_the_fixture_can_actually_distinguish_the_two_weightings():
+    """Guard on the guard. With one positive per set ``S = 1``, so ``record_lesion_weights``
+    returns all-ones and per-lesion weighting is the exact IDENTITY — the comparison below
+    would pass vacuously against a broken implementation. It did exactly that once."""
+    rec = _record()
+    w = record_lesion_weights(rec, record_targets(rec, soft=False))
+    assert (rec["label"] == "pos").sum() >= 2 * len(rec["public_id"].unique())
+    assert not np.allclose(w, 1.0), "the fixture cannot tell per-lesion from per-candidate"
+    assert w[rec["label"].to_numpy() == "pos"].max() < 1.0
 
 
 def test_per_lesion_weighting_changes_the_fit(tmp_path):
