@@ -668,8 +668,18 @@ if AXIS_PROFILE == "measured":
     # the op: among thresholds whose POST-FLOOR pool <= RESCORER_POOL_BUDGET,
     # maximise linked val CPM; tie-break to higher ceiling, then smaller pool.
     PREFILTER_SCORE_FLOOR = 0.08
-    LINK_OP_SCORE_THRESH  = 0.03
-    DET_SELECT_OP_THRESH  = 0.03
+    # [I3.3 FROZEN 2026-08-16] Calibrated on Val, 30 vols, mean over the 3 seed detectors,
+    # UNDER the [I3.2]-frozen linker (len=10). Deployed is 0.03; this substrate wants 0.05.
+    # Literal A2 (recall knee at >= 98% of max) and the repaired A2 (max CPM s.t. post-floor
+    # pool <= RESCORER_POOL_BUDGET) AGREE here -- both give 0.05 -- so the repair costs
+    # nothing and the pick is rule-independent:
+    #   max mean recall 0.9556 @ 0.03; 98% floor = 0.9364; 0.05 clears it at 0.9444.
+    #   CPM is maximised at 0.05 (0.6945) over 0.1 (0.6666) and 0.03 (0.6517).
+    #   pool 75.3 cands/vol, well inside the 200 budget; recall std 0.0157, the joint minimum.
+    # The 0.03 -> 0.05 move costs 1 lesion in 90 (86 -> 85 pooled seed coverage) and buys a
+    # 51% smaller pool (152.3 -> 75.3) plus +0.043 CPM.
+    LINK_OP_SCORE_THRESH  = 0.05
+    DET_SELECT_OP_THRESH  = 0.05    # Inv. 2: the selector must score at the deployed op
 
     # --- DELIBERATELY NOT OVERRIDDEN (record the reason, do not "fix" these) --
     # ISO_SPACING_MM (0.4)       : held fixed so the ONLY changed variable between the
