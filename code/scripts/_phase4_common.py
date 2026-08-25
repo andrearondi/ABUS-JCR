@@ -47,6 +47,10 @@ def add_phase4_paths(parser: argparse.ArgumentParser) -> None:
                              "the cache is a SHARED read-only artefact while --out-root is where a "
                              "run WRITES: [4.2] redirects --out-root per arm, and without this the "
                              "adaptive arm looks for the cache inside its own arm directory.")
+    parser.add_argument("--emb-suffix", default="",
+                        help="tag appended to the cached embedding filenames, so two encoder "
+                             "checkpoints of one seed can coexist (e.g. '_ep14'). Empty = the "
+                             "canonical [4.4] path.")
     parser.add_argument("--record-suffix", default="",
                         help="'' = the PRIMARY frozen pool (default), which since 2026-08-08 IS "
                              "the promoted corrected-flip pool. The 'hicov' contingency pool is "
@@ -83,8 +87,16 @@ def embeddings_dir(args) -> Path:
     return Path(args.out_root) / "embeddings"
 
 
-def emb_path(args, split: str, seed: int) -> Path:
-    return embeddings_dir(args) / f"emb_{split}_seed{int(seed)}.npy"
+def emb_path(args, split: str, seed: int, suffix: Optional[str] = None) -> Path:
+    """``embeddings/emb_{split}_seed{R}{suffix}.npy``.
+
+    The suffix exists so two checkpoints of the SAME seed can be cached side by side. `[4.2d.1]`
+    selected epoch 0 on val CPM while balanced accuracy peaks at epoch 14 — different encoders,
+    and the appearance verdict must not rest on a checkpoint chosen by a metric the encoder
+    cannot control. Defaults to ``--emb-suffix`` (empty ⇒ the canonical `[4.4]` path).
+    """
+    sfx = getattr(args, "emb_suffix", "") if suffix is None else suffix
+    return embeddings_dir(args) / f"emb_{split}_seed{int(seed)}{sfx or ''}.npy"
 
 
 def variant_dir(args, variant: str, seed: int, trial: int) -> Path:
