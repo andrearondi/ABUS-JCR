@@ -25,9 +25,12 @@ from abus_jcr.rescore.datasets import collate_sets, group_sets
 from abus_jcr.rescore.losses import encode_labels
 from abus_jcr.rescore.tokens import apply_standardiser, build_feature_matrix, fit_standardiser
 
-DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs/phase1"
-DEFAULT_PHASE3_OUT = "/home/maia-user/Andre2/outputs/phase3"
-DEFAULT_PHASE4_OUT = "/home/maia-user/Andre2/outputs/phase4"
+# Re-pointed to the isotropic substrate 2026-08-25 (CLAUDE.md -> "THE SUBSTRATE").
+# These were `outputs/` (the frozen legacy arm); a forgotten --phase1-out silently
+# resolved there. `cache_root` below now also refuses a foreign cache by name.
+DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs_iso/phase1"
+DEFAULT_PHASE3_OUT = "/home/maia-user/Andre2/outputs_iso/phase3"
+DEFAULT_PHASE4_OUT = "/home/maia-user/Andre2/outputs_iso/phase4"
 DEFAULT_DATA_ROOT = "/home/maia-user/Andre2/data"
 
 _SPLIT_DIR = {"train": "Train", "val": "Validation"}   # Test is Phase 5 only (Inv. 9)
@@ -60,8 +63,35 @@ def add_phase4_paths(parser: argparse.ArgumentParser) -> None:
 
 
 # ----------------------------------------------------------------------------- paths
+_PROFILE_ANNOUNCED = False
+
+
 def cache_root(args) -> Path:
-    return Path(args.phase1_out) / "cache"
+    """Resolve the iso cache root, banner the profile once, and REFUSE a foreign cache.
+
+    Same guard as ``_phase3_common.cache_root`` (added there 2026-08-12 after a forgotten
+    ``export`` surfaced as a FileNotFoundError forty frames deep). Phase-4 artefacts —
+    crops, embeddings, every rung of the ladder — are substrate-specific, so each run has
+    to name the substrate that produced it.
+    """
+    global _PROFILE_ANNOUNCED
+    root = Path(args.phase1_out) / "cache"
+    from abus_jcr import cache as K
+    if not _PROFILE_ANNOUNCED:
+        _PROFILE_ANNOUNCED = True
+        print(f"# axis profile = {C.AXIS_PROFILE} | spacing_storage_mm = {C.SPACING_STORAGE_MM}")
+        print(f"# iso cache    = {K.cache_dir(root)}")
+    try:
+        K.assert_hash(root)
+    except K.CacheHashMismatch as exc:
+        raise K.CacheHashMismatch(
+            f"{exc}\n"
+            f"  axis profile in this shell : {C.AXIS_PROFILE}\n"
+            f"  cache dir it resolved to   : {K.cache_dir(root)}\n"
+            f"  HINT: Phase 4 runs on the ISOTROPIC substrate. Run "
+            f"`export ABUS_AXIS_PROFILE=measured` and point --phase1-out at "
+            f"outputs_iso/phase1.") from exc
+    return root
 
 
 def candidates_dir(args) -> Path:
