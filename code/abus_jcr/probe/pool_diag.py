@@ -9,7 +9,9 @@ inform Phase 4:
    recall-at-FP/vol curve (→ how much a re-ranker can win).
 3. ``pairwise_geometry`` — the 6-D relative-log-geometry ``g(m,n)`` (the exact Axis-A descriptor) for
    TP-TP / TP-FP / FP-FP pairs (→ the DIRECT pairwise test the per-candidate FP-probe could not do).
-4. ``set_structure`` — per-volume candidate counts, TP/FP/ignore mix, and spatial-cluster redundancy.
+4. ``set_structure`` — per-volume candidate counts, TP/FP/ignore mix, and spatial-cluster redundancy
+   (clustered in ISO-CACHE voxels — see the units note in :func:`set_structure`; it clustered native
+   voxel indices until 2026-08-27 and those recorded values are not comparable to any other probe).
 
 TP := ``label == 'pos'`` (iou_gt > 0.30); FP := ``label == 'neg'``; the ignore band is excluded from
 TP-vs-FP contrasts (Inv. 11).
@@ -377,14 +379,35 @@ def localization_quality(df: pd.DataFrame, gt_by_pid: Dict[int, tuple]) -> dict:
     return out
 
 
-def set_structure(df: pd.DataFrame, cluster_radius: float = 10.0) -> dict:
-    """Per-volume counts (n, pos, neg, ignore, pos:neg) + spatial-cluster redundancy; plus aggregates."""
+def set_structure(df: pd.DataFrame, cluster_radius: float = C.FP_PROBE_CLUSTER_RADIUS) -> dict:
+    """Per-volume counts (n, pos, neg, ignore, pos:neg) + spatial-cluster redundancy; plus aggregates.
+
+    **UNITS — corrected 2026-08-27; the pre-correction numbers are not comparable to anything.**
+    Clustering runs on ``cen_d0/cen_d1/cen_d2`` (ISO-CACHE voxels) at ``cluster_radius`` iso voxels,
+    i.e. the same space, the same constant and the same single-linkage rule as
+    :mod:`abus_jcr.probe.fp_structure` and ``scripts/phase3_tube_stats.py``. On the ``measured``
+    profile that radius is a genuine ``radius * ISO_SPACING_MM`` sphere.
+
+    Until 2026-08-27 it clustered ``coordX/coordY/coordZ`` — **native voxel indices** — with the same
+    numeric radius, which on this dataset is a ``2.0 x 0.73 x 4.76`` mm sliver, not a 4 mm sphere. It
+    therefore split single objects into many clusters and under-reported redundancy (recorded val
+    medians ~1.7-1.8 against ``phase3_tube_stats``' 7.7 at the same nominal radius). The defect was
+    **descriptive only** — no gate, frozen constant or deployed artefact ever read ``redundancy`` or
+    ``clusters`` — but any recorded pre-2026-08-27 value of either must be re-run before it is
+    quoted, and must never be placed beside an iso-space cluster statistic.
+    """
     from .candidate_diag import cluster_counts
+    missing = [c for c in ("cen_d0", "cen_d1", "cen_d2") if c not in df.columns]
+    if missing:
+        raise KeyError(f"set_structure clusters in iso-cache voxels and needs {missing}; the frozen "
+                       "candidate record carries them (candidates/record.py). Do NOT substitute "
+                       "coordX/Y/Z — those are native voxel indices and the radius would be a "
+                       "mixed-unit sliver (see this function's docstring).")
     per_vol = []
     for det, pid, g in _set_groups(df):
         pos = int((g["label"] == "pos").sum()); neg = int((g["label"] == "neg").sum())
         ign = int((g["label"] == "ignore").sum())
-        centres = g[["coordX", "coordY", "coordZ"]].to_numpy(float)
+        centres = g[["cen_d0", "cen_d1", "cen_d2"]].to_numpy(float)
         ncl, npt, redund = cluster_counts(centres, cluster_radius)
         per_vol.append({"detector_of_origin": det, "public_id": pid, "n": int(len(g)), "pos": pos,
                         "neg": neg, "ignore": ign, "pos_to_neg": (pos / neg) if neg else float("nan"),
@@ -397,5 +420,9 @@ def set_structure(df: pd.DataFrame, cluster_radius: float = 10.0) -> dict:
         "neg_per_vol_median": float(np.median([v["neg"] for v in per_vol])) if n_vol else float("nan"),
         "redundancy_median": float(np.nanmedian([v["redundancy"] for v in per_vol])) if n_vol else float("nan"),
         "total_pos": int(sum(v["pos"] for v in per_vol)), "total_neg": int(sum(v["neg"] for v in per_vol)),
+        # Units travel with the number, so an output can be attributed from its own log.
+        "cluster_space": "iso_cache_voxels (cen_d0,cen_d1,cen_d2)",
+        "cluster_radius_iso_vox": float(cluster_radius),
+        "cluster_radius_mm": float(cluster_radius * C.ISO_SPACING_MM),
     }
     return {"per_vol": per_vol, "aggregate": agg}

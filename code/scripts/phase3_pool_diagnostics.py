@@ -92,6 +92,11 @@ def _print_blocks(df: pd.DataFrame, tag: str, gt_by_pid: dict | None = None) -> 
     print(f"  sets={a['n_volumes']}  cands/set med={a['cands_per_vol_median']:.1f}  "
           f"pos/set med={a['pos_per_vol_median']:.1f}  neg/set med={a['neg_per_vol_median']:.1f}  "
           f"redundancy med={a['redundancy_median']:.1f}  (total pos {a['total_pos']} / neg {a['total_neg']})")
+    print(f"  ^ redundancy = candidates per single-linkage cluster at r={a['cluster_radius_iso_vox']:.1f} "
+          f"iso vox = {a['cluster_radius_mm']:.1f} mm, on {a['cluster_space']}.\n"
+          f"    UNITS CORRECTED 2026-08-27 (was native voxel indices at the same numeric radius = a "
+          f"mixed-unit sliver);\n    any pre-correction `redundancy`/`clusters` paste is NOT comparable "
+          f"to this one or to phase3_tube_stats.")
 
     ci = PD.confidence_iou_stats(df)
     print("\n# 5. CONFIDENCE vs IoU  (does score_max track localization quality?)\n")

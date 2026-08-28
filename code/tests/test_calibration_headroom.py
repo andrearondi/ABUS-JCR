@@ -11,7 +11,9 @@ import pytest
 
 from abus_jcr import conventions as C
 from abus_jcr.probe.calibration import (GRID, TOP, per_set_cost, volume_neutral_probability,
-                                        per_volume_oracle_probability, headroom_curve, assignments)
+                                        per_volume_oracle_probability, headroom_curve, assignments,
+                                        pooled_prefix_scan, global_monotone_cuts,
+                                        global_monotone_probability)
 
 
 def _pool(spec):
@@ -177,3 +179,138 @@ def test_oracle_cannot_exceed_the_recall_ceiling():
     ceiling = recall_ceiling(evaluate_froc(gt, pred[C.PRED_COLUMNS]))
     assert ceiling == pytest.approx(7 / 8, abs=1e-6)
     assert _cpm_of(gt, df, a["per_vol_oracle"].to_numpy()) <= ceiling + 1e-9
+
+
+# ---- Part C: the QUANTISATION term (global monotone rescaling) -----------------
+#
+# `global_monotone` exists to answer "how much of the reported calibration headroom is the fixed
+# 0.005 threshold grid rather than cross-volume miscalibration?". It must therefore be provably
+# information-free: a non-decreasing function of `score_max` and nothing else.
+
+def _scan_frame(rows):
+    """``rows = [(public_id, score, label)]`` -> the three columns the pooled scan reads."""
+    return pd.DataFrame([{"public_id": p, "score_max": s, "label": l} for p, s, l in rows])
+
+
+def test_pooled_prefix_scan_mirrors_the_evaluator_semantics():
+    """FP unless it hits (so `ignore` IS an FP, as `max_iou <= 0.3` is), and a volume's SECOND hit
+    is neither TP nor FP (the evaluator counts unique hit GT labels)."""
+    df = _scan_frame([(1, 0.9, "pos"),        # hit      -> +1 lesion, 0 FP
+                      (1, 0.8, "pos"),        # 2nd hit in the SAME volume -> neither
+                      (2, 0.7, "ignore"),     # ignore band -> an FP for the evaluator
+                      (2, 0.6, "neg"),        # FP
+                      (2, 0.5, "pos")])       # hit in a new volume
+    scan = pooled_prefix_scan(df)
+    assert list(scan["cum_fp"]) == [0, 0, 1, 2, 2]
+    assert list(scan["cum_hits"]) == [1, 1, 1, 1, 2]
+
+
+def test_global_monotone_is_a_nondecreasing_function_of_score_max():
+    """Equal scores MUST get equal probabilities: splitting a tie block would be a re-ranking, i.e.
+    information the baseline does not have, and the term would stop measuring quantisation."""
+    df = _scan_frame([(v, sc, lab) for v in range(6)
+                      for sc, lab in ((0.40, "pos"), (0.40, "neg"), (0.20, "neg"))])
+    p = global_monotone_probability(df, n_vol=6).to_numpy()
+    s = df["score_max"].to_numpy()
+    for a in range(len(s)):
+        for b in range(len(s)):
+            if s[a] == s[b]:
+                assert p[a] == pytest.approx(p[b])         # ties preserved as ties
+            elif s[a] > s[b]:
+                assert p[a] >= p[b] - 1e-12                # order never inverted
+
+
+def test_global_monotone_cuts_bracket_every_key_fp():
+    """Each key rate gets a point at or under its budget and one over it, so the interpolation
+    chord the official code reads is as tight as the ordering allows."""
+    spec = {v: [(True, 0.9 - 0.001 * v)] + [(False, 0.5 - 0.001 * i) for i in range(10)]
+            for v in range(8)}
+    _gt, df = _official_pool(spec)
+    cuts = global_monotone_cuts(df, n_vol=8)
+    for c in cuts:
+        if c["side"] == "below":
+            assert c["fp_per_vol"] <= c["key_fp"] + 1e-9
+        else:
+            assert c["fp_per_vol"] > c["key_fp"] - 1e-9
+    for f in C.KEY_FP:
+        sides = {c["side"] for c in cuts if c["key_fp"] == f}
+        assert "below" in sides                    # an above-cut exists unless the pool is exhausted
+
+
+def test_global_monotone_drops_dominated_operating_points():
+    """Two cuts at the same FP total, or a dearer cut recovering no extra lesion, must not both be
+    emitted: the official interpolator breaks an fp tie with a non-stable sort, so a dominated point
+    is not merely wasted, it can hand the reader the worse of two curves at the same cost."""
+    _gt, df = _eight_volume_pool()          # top of the pooled order is a 4-way tie of artefacts
+    cuts = global_monotone_cuts(df, n_vol=8)
+    kept = [c for c in cuts if c["kept"]]
+    assert {c["prefix"] for c in kept} == {12}        # 4 FPs + all 8 hits; (4,0) and (8,8) dominated
+    fps = [c["fp"] for c in kept]
+    assert len(fps) == len(set(fps))                  # no two kept cuts share an FP total
+
+
+def test_global_monotone_recovers_what_the_threshold_grid_costs():
+    """The whole point, end to end through the OFFICIAL evaluator.
+
+    Every score here sits inside ONE 0.005 grid cell, so the official sweep cannot separate any two
+    operating points and the reported curve is a single chord — even though the ordering is perfect
+    (every volume's hit outscores every artefact). A monotone rescaling changes no ordering and
+    recovers the loss, which is exactly the quantity this term is meant to isolate.
+    """
+    spec = {v: [(True, 0.9002), (False, 0.9001)] for v in range(8)}
+    gt, df = _official_pool(spec)
+    a = assignments(df, extra={"global_monotone": global_monotone_probability(df, n_vol=8)})
+    base = _cpm_of(gt, df, a["score_max"].to_numpy())
+    gm = _cpm_of(gt, df, a["global_monotone"].to_numpy())
+    assert gm == pytest.approx(1.0, abs=1e-6)      # 8 hits at 0 FP, readable at every key FP
+    assert gm > base + 0.2                          # the grid was costing ~0.3 CPM here
+    # and it never exceeds the per-volume oracle, whose family of maps contains every global one
+    assert _cpm_of(gt, df, a["per_vol_oracle"].to_numpy()) >= gm - 1e-9
+
+
+def test_global_monotone_never_loses_to_the_baseline_it_re_reads():
+    """It re-reads the SAME ordering, so it cannot do worse than ``score_max`` — on any pool. If this
+    ever fires, the cut placement is losing operating points the baseline had, and the term would
+    under-report the artefact instead of measuring it."""
+    for gt, df in (_eight_volume_pool(), _miscalibrated_pool()):
+        n_vol = df["public_id"].nunique()
+        a = assignments(df, extra={"global_monotone": global_monotone_probability(df, n_vol=n_vol)})
+        base = _cpm_of(gt, df, a["score_max"].to_numpy())
+        gm = _cpm_of(gt, df, a["global_monotone"].to_numpy())
+        oracle = _cpm_of(gt, df, a["per_vol_oracle"].to_numpy())
+        assert gm >= base - 1e-9                  # a monotone re-read never costs
+        assert gm <= oracle + 1e-9                # global maps are a subset of the per-volume family
+
+
+def test_global_monotone_anchors_only_when_its_cheapest_point_is_not_free():
+    """``_interpolate_recall_at_fp`` returns 0 below the smallest achievable FP, so a curve whose
+    first point costs FPs needs the empty-set anchor that every real probability column has — and a
+    curve whose first point is already free must NOT have it, or the anchor ties with it at fp ~ 0
+    and the non-stable sort decides the answer."""
+    _gt, costly = _eight_volume_pool()            # cheapest kept cut costs 4 FPs -> anchored
+    top = np.round((TOP - global_monotone_probability(costly, n_vol=8).to_numpy()) / GRID).min()
+    assert top == 1
+
+    _gt2, free = _official_pool({v: [(True, 0.9002), (False, 0.9001)] for v in range(8)})
+    top_free = np.round((TOP - global_monotone_probability(free, n_vol=8).to_numpy()) / GRID).min()
+    assert top_free == 0                          # a zero-FP cut exists; no anchor, no tie
+
+
+def test_volume_neutral_anchoring_is_opt_in_and_never_moves_the_recorded_default():
+    """The recorded headroom numbers were measured unanchored. The flag exists to MEASURE that
+    artefact, not to change it behind a recorded value."""
+    _gt, df = _eight_volume_pool()
+    plain = volume_neutral_probability(df).to_numpy()
+    assert np.round((TOP - plain) / GRID).min() == 0            # default: unchanged, top cell used
+    assert np.round((TOP - volume_neutral_probability(df, anchored=True).to_numpy()) / GRID).min() == 1
+    # "auto" anchors here (4 of 8 sets have an artefact at rank 1) and recovers the lost low-FP points
+    auto = volume_neutral_probability(df, anchored="auto")
+    assert np.round((TOP - auto.to_numpy()) / GRID).min() == 1
+    assert _cpm_of(_gt, df, auto.to_numpy()) > _cpm_of(_gt, df, plain) + 0.1
+
+
+def test_global_monotone_needs_at_most_one_level_per_key_fp():
+    """It must fit the official grid by construction (8 levels), not by luck."""
+    gt, df = _eight_volume_pool()
+    levels = np.round((TOP - global_monotone_probability(df, n_vol=8).to_numpy()) / GRID)
+    assert len(set(levels.tolist())) <= len(C.KEY_FP) + 1

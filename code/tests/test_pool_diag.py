@@ -137,6 +137,46 @@ def test_set_structure_counts():
     assert ss["aggregate"]["pos_per_vol_median"] == pytest.approx(0.5)
 
 
+def test_set_structure_clusters_in_iso_voxels_and_not_in_native_coordinates():
+    """Units regression (2026-08-27): redundancy is an ISO-cache-voxel statistic.
+
+    The fixture is built so the two spaces give OPPOSITE answers, because a test whose fixture
+    cannot distinguish them would have passed the defect (HISTORY.md §8 — five such tests once
+    pinned the flip-axis bug). Volume A is one object in iso space and two in native space;
+    volume B is the reverse. Both the correct reading AND the absence of the wrong one are
+    asserted.
+    """
+    rows = [
+        # A: 2 iso vox apart (one cluster at r=10) but 500 native units apart (would be two).
+        _cand("A", 0.9, "pos", cx=0.0,   cy=0.0, cz=0.0, cen_d0=0.0, cen_d1=0.0, cen_d2=0.0),
+        _cand("A", 0.5, "neg", cx=500.0, cy=0.0, cz=0.0, cen_d0=2.0, cen_d1=0.0, cen_d2=0.0),
+        # B: 50 iso vox apart (two clusters) but 1 native unit apart (would be one).
+        _cand("B", 0.8, "neg", cx=0.0, cy=0.0, cz=0.0, cen_d0=0.0,  cen_d1=0.0, cen_d2=0.0),
+        _cand("B", 0.4, "neg", cx=1.0, cy=0.0, cz=0.0, cen_d0=50.0, cen_d1=0.0, cen_d2=0.0),
+    ]
+    per = {d["public_id"]: d for d in set_structure(_rec(rows), cluster_radius=10.0)["per_vol"]}
+    assert per["A"]["clusters"] == 1 and per["A"]["redundancy"] == pytest.approx(2.0)
+    assert per["B"]["clusters"] == 2 and per["B"]["redundancy"] == pytest.approx(1.0)
+    # ... and the native-coordinate reading, which would invert both, did NOT happen:
+    assert per["A"]["clusters"] != 2 and per["B"]["clusters"] != 1
+
+
+def test_set_structure_reports_its_cluster_units():
+    """A number whose units are not in its own output is a number that gets mis-quoted."""
+    from abus_jcr import conventions as C
+    a = set_structure(_rec([_cand("A", 0.9, "pos")]))["aggregate"]
+    assert a["cluster_radius_iso_vox"] == pytest.approx(C.FP_PROBE_CLUSTER_RADIUS)
+    assert a["cluster_radius_mm"] == pytest.approx(C.FP_PROBE_CLUSTER_RADIUS * C.ISO_SPACING_MM)
+    assert "cen_d0" in a["cluster_space"] and "iso" in a["cluster_space"]
+
+
+def test_set_structure_refuses_a_frame_without_iso_centroids():
+    """Silently falling back to coordX/Y/Z is exactly the defect; it must fail by name instead."""
+    df = _rec([_cand("A", 0.9, "pos")]).drop(columns=["cen_d0", "cen_d1", "cen_d2"])
+    with pytest.raises(KeyError, match="iso-cache voxels"):
+        set_structure(df)
+
+
 # --- [P3U2.PD 2026-07-27] box viz <-> record audit ---
 def test_iso_box_of_candidate_recovers_the_tube_hull_exactly():
     """The drawn box must be byte-identical to the tube hull the official box was built from."""
