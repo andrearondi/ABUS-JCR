@@ -41,8 +41,8 @@ import numpy as np
 from .. import conventions as C
 
 __all__ = ["POS_LABEL", "NEG_LABEL", "IGNORE_LABEL", "encode_labels",
-           "smooth_ap_loss", "focal_bce", "rescorer_loss", "to_probability",
-           "soft_quality_target", "per_lesion_weights"]
+           "smooth_ap_loss", "froc_surrogate_loss", "focal_bce", "rescorer_loss",
+           "to_probability", "soft_quality_target", "per_lesion_weights"]
 
 POS_LABEL, NEG_LABEL, IGNORE_LABEL = 1.0, 0.0, -1.0
 
@@ -135,6 +135,99 @@ def smooth_ap_loss(logits, labels, set_mask=None, tau: Optional[float] = None):
     if float(n_sets) == 0.0:
         return xp.zeros_like(logits.sum())
     return 1.0 - (ap * hp).sum() / n_sets
+
+
+def _detach(xp, x):
+    """Cut the gradient path in torch; identity in numpy."""
+    return x if xp is np else x.detach()
+
+
+def froc_surrogate_loss(logits, labels, set_mask=None, n_vol=None,
+                        ref_logits=None, ref_labels=None, key_fp=None,
+                        tau: Optional[float] = None, beta: Optional[float] = None,
+                        tau_max: Optional[float] = None):
+    """``1 - CPM`` written directly, smoothed in three places. Pooled ACROSS sets.
+
+    For lesion ``b`` let ``s*_b`` be the score of its best hitting candidate and
+
+        cost_b  = #{ non-hitting candidates j : s_j > s*_b }      (over the WHOLE batch)
+        CPM     = (1/L) sum_b (1/7) sum_k  1[ cost_b / n_vol <= f_k ]
+
+    with ``L`` counting every set, so a lesion no candidate reaches contributes 0 rather than
+    being skipped, exactly as ``det_score`` divides recall by every ground-truth box. The
+    smoothings are a soft maximum over a lesion's hitting candidates, a sum of sigmoids of
+    score differences in place of the count, and a sigmoid of the margin in place of the
+    indicator.
+
+    Three properties this has and :func:`smooth_ap_loss` does not:
+
+    * adding a constant to EVERY candidate changes nothing, which is right, because a strictly
+      increasing global rescaling leaves every achievable operating point where it was;
+    * adding a constant to ONE set's candidates changes the cost of lesions in every other set,
+      which is the sensitivity the metric's single global threshold demands;
+    * the gradient is largest for lesions sitting near one of the seven rates and vanishes both
+      for lesions already at the top of the pooled ranking and for those buried far below any
+      budget, so capacity goes where the metric can still move.
+
+    ``ref_logits`` / ``ref_labels`` extend the false-positive population with candidates from
+    outside the batch (the reference table of ``RB_PHASE_4_ISO.md`` §12). They are DETACHED: they
+    enlarge the field a lesion must outrank without being taught. Pass ``n_vol`` whenever they are
+    used, or the rate is divided by the batch alone.
+
+    **Ignore-band candidates count but are not supervised.** ``det_score`` charges anything that
+    fails the hit test whatever its overlap, so they enter ``cost``; Inv. 11 forbids teaching the
+    ambiguous middle, so their scores are detached.
+    """
+    xp = _xp(logits)
+    mask = _as_mask(xp, set_mask, logits)
+    tau = C.RESC_FROC_TAU if tau is None else float(tau)
+    beta = C.RESC_FROC_BETA if beta is None else float(beta)
+    tau_max = C.RESC_FROC_MAX_TAU if tau_max is None else float(tau_max)
+    keys = C.KEY_FP if key_fp is None else tuple(float(f) for f in key_fp)
+
+    is_pos = labels > 0.5
+    is_ign = labels < -0.5
+    f = (lambda t: t.astype(float)) if xp is np else (lambda t: t.to(logits.dtype))
+    p = f(is_pos) * mask
+    neg = mask * (1.0 - f(is_pos)) * (1.0 - f(is_ign))     # supervised false positives
+    ign = mask * f(is_ign)                                  # charged, never taught
+
+    has_pos = p.sum(-1) > 0.5
+    n_sets = float(mask.max(-1).sum()) if xp is np else float(mask.max(-1).values.sum())
+    if n_sets == 0.0:
+        return xp.zeros_like(logits.sum())
+    n_vol = n_sets if n_vol is None else float(n_vol)
+
+    # s*_b: soft maximum over the set's hitting candidates, -inf where there are none
+    neg_inf = -1e30
+    z = xp.where(p > 0.5, logits / tau_max, neg_inf + xp.zeros_like(logits))
+    zmax = z.max(-1) if xp is np else z.max(-1).values
+    s_star = tau_max * (zmax + xp.log(xp.exp(z - zmax[:, None]).sum(-1)))
+
+    # cost_b: soft count of non-hitting candidates above s*_b, over the pooled batch + reference
+    flat_s = logits.reshape(-1)
+    cost = (_sigmoid(xp, (flat_s[None, :] - s_star[:, None]) / tau) * neg.reshape(-1)[None, :]).sum(-1)
+    flat_i = _detach(xp, logits).reshape(-1)
+    cost = cost + (_sigmoid(xp, (flat_i[None, :] - s_star[:, None]) / tau)
+                   * ign.reshape(-1)[None, :]).sum(-1)
+    if ref_logits is not None:
+        r_s = _detach(xp, ref_logits).reshape(-1)
+        r_q = f(_as_arr(xp, ref_labels, r_s) < 0.5)
+        cost = cost + (_sigmoid(xp, (r_s[None, :] - s_star[:, None]) / tau) * r_q[None, :]).sum(-1)
+
+    rate = cost / n_vol
+    sens = sum(_sigmoid(xp, (float(k) - rate) / beta) for k in keys) / float(len(keys))
+    sens = sens * f(has_pos)                                # unreachable lesions contribute 0
+    return 1.0 - sens.sum() / n_sets
+
+
+def _as_arr(xp, x, like):
+    """``ref_labels`` may arrive as a list or a numpy array even under torch."""
+    if xp is np:
+        return np.asarray(x, dtype=float)
+    import torch
+    return x if torch.is_tensor(x) else torch.as_tensor(np.asarray(x, dtype=float),
+                                                        dtype=like.dtype)
 
 
 # ----------------------------------------------------------------------------- calibration term
@@ -262,7 +355,8 @@ def to_probability(logits, eps: Optional[float] = None):
 
 def rescorer_loss(logits, labels, set_mask, w_rank: float, lam: float, alpha: float,
                   tau: Optional[float] = None, gamma: Optional[float] = None,
-                  soft: bool = False, bce_weights=None) -> Tuple:
+                  soft: bool = False, bce_weights=None, rank_loss: Optional[str] = None,
+                  n_vol=None, ref_logits=None, ref_labels=None, beta: Optional[float] = None) -> Tuple:
     """``(total, {"rank": ..., "bce": ...})`` — the per-variant weighted sum (§4.7).
 
     ``w_rank = 0`` is the CE-only rung (B1/B2); ``lam = RESC_LAMBDA_DIAGNOSTIC = 0`` is the
@@ -284,7 +378,14 @@ def rescorer_loss(logits, labels, set_mask, w_rank: float, lam: float, alpha: fl
             "soft targets are only defined for the CE rungs (w_rank = 0): smooth_ap_loss "
             "would read `labels > 0.5` as IoU > 0.20, not the oracle's IoU > 0.30 hit test. "
             "A metric-aligned ranking term is a separate change.")
-    rank = smooth_ap_loss(logits, labels, set_mask, tau=tau)
+    which = C.RESC_LOSS_RANK if rank_loss is None else str(rank_loss)
+    if which == "smooth_ap":
+        rank = smooth_ap_loss(logits, labels, set_mask, tau=tau)
+    elif which == "froc":
+        rank = froc_surrogate_loss(logits, labels, set_mask, n_vol=n_vol, tau=tau, beta=beta,
+                                   ref_logits=ref_logits, ref_labels=ref_labels)
+    else:
+        raise ValueError(f"unknown rank_loss {which!r}; known: 'smooth_ap', 'froc'")
     bce = focal_bce(logits, labels, alpha=alpha, gamma=gamma, set_mask=set_mask,
                     soft=soft, weights=bce_weights)
     return w_rank * rank + lam * bce, {"rank": rank, "bce": bce}

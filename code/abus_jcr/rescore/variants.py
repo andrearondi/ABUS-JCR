@@ -33,8 +33,9 @@ import numpy as np
 
 from .. import conventions as C
 
-__all__ = ["LADDER", "VARIANTS", "SUB_ABLATION_BLOCKS", "trials_for", "b1_param_count",
-           "match_b1_capacity", "fairness_table", "assert_fairness", "select_epoch_by_val_cpm"]
+__all__ = ["LADDER", "LADDER_POOLED", "VARIANTS", "COMPARISONS", "COMPARISONS_POOLED",
+           "SUB_ABLATION_BLOCKS", "trials_for", "b1_param_count", "match_b1_capacity",
+           "fairness_table", "assert_fairness", "select_epoch_by_val_cpm"]
 
 #: The six pre-registered rungs. B0 is the recorded ``score_max`` ranking, not a model.
 LADDER = ("B0", "B1", "B2", "A1", "A2", "FULL")
@@ -51,7 +52,24 @@ VARIANTS: Dict[str, Dict] = {
              "isolates": "loss (vs B2)"},
     "FULL": {"module": "set", "geometry": True,  "w_rank": 1.0, "search": "lambda",
              "isolates": "the contribution (vs B2)"},
+    # --- added 2026-08-28, after [I3.7] and before any ladder number existed ---------------
+    # Same architectures, same 4-trial lambda grid; the ranking term is the POOLED FROC
+    # surrogate instead of per-set smooth-AP. Declared as three extra rungs rather than as a
+    # redefinition of A2/FULL, so "fixed in advance" keeps meaning what it says (thesis §3.1.3).
+    "B1-P":   {"module": "mlp", "geometry": False, "w_rank": 1.0, "search": "lambda",
+               "rank_loss": "froc",
+               "isolates": "the objective WITHOUT the set module (vs FULL-P)"},
+    "A2-P":   {"module": "set", "geometry": False, "w_rank": 1.0, "search": "lambda",
+               "rank_loss": "froc",
+               "isolates": "metric alignment on the appearance-only branch (vs A2)"},
+    "FULL-P": {"module": "set", "geometry": True,  "w_rank": 1.0, "search": "lambda",
+               "rank_loss": "froc",
+               "isolates": "the proposed module (vs B2; vs FULL for the objective alone)"},
 }
+
+#: The three rungs carrying the pooled surrogate. NOT part of :data:`LADDER`, which is the
+#: pre-registered six and must stay that way.
+LADDER_POOLED = ("B1-P", "A2-P", "FULL-P")
 
 #: Blocks toggled on/off on FULL at its selected λ, 3 seeds each (§4.7 sub-ablations).
 SUB_ABLATION_BLOCKS = ("rank", "score_stats", "tube_geom")
@@ -59,6 +77,11 @@ SUB_ABLATION_BLOCKS = ("rank", "score_stats", "tube_geom")
 #: The pre-registered comparison list (primary first).
 COMPARISONS = (("FULL", "B2"), ("A1", "B2"), ("A2", "B2"), ("B2", "B1"), ("B1", "B0"),
                ("FULL", "A1"))
+
+#: The comparisons the pooled rungs exist to make. ``FULL-P`` vs ``FULL`` holds the architecture
+#: fixed and moves only the objective; ``FULL-P`` vs ``B1-P`` holds the objective fixed and moves
+#: only the set module. Without both, a gain at ``FULL-P`` is unattributable.
+COMPARISONS_POOLED = (("FULL-P", "B2"), ("FULL-P", "FULL"), ("A2-P", "A2"), ("FULL-P", "B1-P"))
 
 
 def trials_for(variant: str, b2_choice: Optional[Dict] = None) -> List[Dict]:

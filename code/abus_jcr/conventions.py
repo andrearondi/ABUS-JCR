@@ -498,6 +498,18 @@ RESC_GEOM_EPS        = 1e-6         # MUST equal probe/pool_diag.EPS (byte-ident
 RESC_LOSS_RANK       = "smooth_ap"  # Phase-0a single-lesion dominance (99/100 Train, 29/30 Val)
                                     # -> the RS "sort positives by IoU" term is inert; DO NOT use RS.
 RESC_SMOOTH_AP_TAU   = 0.01         # sigmoid temperature of the rank indicator
+
+# --- the pooled FROC surrogate (Axis C, added 2026-08-28) -------------------------------
+# smooth_ap is per SET and provably invariant to a per-volume score shift, so it cannot
+# supervise the quantity det_score's single global threshold reads. The surrogate writes CPM
+# out directly: a lesion's COST is the number of non-hitting candidates scored above its best
+# hitting candidate, counted across the whole batch, and CPM is the mean over the seven key
+# rates of the fraction of lesions whose cost/n_vol falls under that rate. Three temperatures
+# smooth the three non-differentiable pieces; at 0 the surrogate IS that step definition
+# (tests/test_froc_surrogate.py).
+RESC_FROC_TAU        = 0.10         # logit scale: "is this false positive above the lesion?"
+RESC_FROC_BETA       = 0.25         # FP-per-volume scale: "is this lesion under the budget?"
+RESC_FROC_MAX_TAU    = 0.10         # logit scale: soft max over a lesion's hitting candidates
 # PROMOTED 2026-08-15 by `[4.2c]` (3 seeds, pre-specified 2x2): 2.0 -> 0.0. Focal loss is
 # deliberately NOT a proper scoring rule; plain weighted BCE is, and `[F.8]` puts 78.7 % of the
 # headroom in cross-volume CALIBRATION — the quantity a proper scoring rule preserves and focal
