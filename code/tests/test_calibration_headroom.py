@@ -357,8 +357,14 @@ def test_b0_rank_carries_a_paired_interval_against_b0():
     """Inv. 12: B0-rank is REPORTED, so it needs a CI, and the pool is identical between the
     two conditions (only `probability` moves), which is exactly what the paired estimator is
     for. Deliberately tiny draw count: each draw is two oracle calls, so this pins that the
-    call composes and returns a coherent interval, NOT the interval's width. The reported
-    number runs at n_boot=1000 in `phase3_baseline_froc`."""
+    call composes and returns a coherent payload, NOT the interval's width. The reported
+    number runs at n_boot=1000 in `phase3_baseline_froc`.
+
+    **Do not assert ``lo <= delta_point <= hi``.** A percentile bootstrap interval is not
+    built to contain the point estimate and frequently does not at small ``n_boot`` — the
+    first version of this test asserted it and failed on the server with lo = 0.4984 against
+    a point of 0.4250, which was the assertion being wrong, not the estimator.
+    """
     from abus_jcr.eval.froc import paired_bootstrap_delta
     from abus_jcr.rescore.evaluate import b0_rank_probability
     gt, df = _miscalibrated_pool()
@@ -368,12 +374,15 @@ def test_b0_rank_carries_a_paired_interval_against_b0():
         p["probability"] = np.clip(np.asarray(prob, float), 0, 1 - 1e-9)
         return p[C.PRED_COLUMNS]
 
-    d = paired_bootstrap_delta(gt, _pred(b0_rank_probability(df["score_max"].to_numpy(float),
-                                                             df["public_id"].to_numpy())),
-                               _pred(df["score_max"].to_numpy(float)), n_boot=6, seed=0)
+    a = _pred(b0_rank_probability(df["score_max"].to_numpy(float), df["public_id"].to_numpy()))
+    b = _pred(df["score_max"].to_numpy(float))
+    d = paired_bootstrap_delta(gt, a, b, n_boot=6, seed=0)
     assert d["delta_point"] > 0
-    assert d["lo"] <= d["delta_point"] <= d["hi"]
+    assert d["delta_point"] == pytest.approx(_cpm_of(gt, df, a["probability"].to_numpy())
+                                             - _cpm_of(gt, df, b["probability"].to_numpy()))
+    assert d["lo"] <= d["hi"]
     assert 0.0 <= d["frac_positive"] <= 1.0
+    assert len(d["boot"]) == 6
 
 
 def test_b0_rank_equals_the_anchored_assignment_through_the_evaluator():
@@ -394,3 +403,79 @@ def test_the_unanchored_reading_is_a_floor_not_the_value():
     a = assignments(df)
     assert (_cpm_of(gt, df, a["volume_neutral_anchored"].to_numpy())
             >= _cpm_of(gt, df, a["volume_neutral"].to_numpy()) - 1e-12)
+
+
+# ---- Part D: the vendored evaluator's unstable tie-break -----------------------
+# `_official_det_score` line 315 does `sort_values("fp")` with pandas' DEFAULT quicksort,
+# which is NOT stable, and `_interpolate_recall_at_fp` then reads `values[-1]`. So whenever
+# two thresholds share an `fp` but carry DIFFERENT recalls, the reported CPM depends on an
+# arbitrary sort order and can differ between pandas builds. That is vendored challenge code
+# and Inv. 3 forbids touching it, so the defence is to know which pools are exposed.
+#
+# `_miscalibrated_pool` IS exposed — it has exactly one such `fp`, for `score_max` as well as
+# for B0-rank, which is why its absolute CPM moved between a laptop and the cluster
+# (0.3841 vs 0.4250) on 2026-08-30. Same-process comparisons on it are still valid, since both
+# sides get the same tie-break; cross-machine absolute values are not.
+
+def _ambiguous_fp_count(gt, df, prob) -> int:
+    """How many `fp` values carry more than one distinct recall, i.e. how many arbitrary
+    tie-breaks the reported CPM actually depends on. Zero means the unstable sort is inert."""
+    from abus_jcr.eval.froc import evaluate_froc
+    p = pd.DataFrame({c: df[c] for c in C.GT_COLUMNS})
+    p["probability"] = np.clip(np.asarray(prob, float), 0, 1 - 1e-9)
+    res = evaluate_froc(gt, p[C.PRED_COLUMNS])
+    t = pd.DataFrame({"fp": np.asarray(res["detection"]["fp"], float),
+                      "recall": np.asarray(res["detection"]["recall"], float)})
+    return int((t.groupby("fp")["recall"].nunique() > 1).sum())
+
+
+def _realistic_pool(seed=0, n_vol=30):
+    """The validation pool's SHAPE: 30 volumes, one lesion each, 25-55 candidates per volume,
+    the hit at rank 1 about four times in five. Varied set sizes are what break up the `fp`
+    ties that the hand-built fixtures above are full of."""
+    rng = np.random.default_rng(seed)
+    gt, rows = [], []
+    for v in range(n_vol):
+        gt.append({"public_id": v, **{k: _HIT[k] for k in
+                                      ("coordX", "coordY", "coordZ", "x_length", "y_length", "z_length")}})
+        n = int(rng.integers(25, 55))
+        hit_rank = 1 if rng.random() < 0.8 else int(rng.integers(2, 12))
+        scores = np.sort(rng.random(n) * 0.6 + 0.05)[::-1]
+        for i in range(n):
+            base = _HIT if (i + 1) == hit_rank else dict(_MISS, coordX=400.0 + 3 * i)
+            rows.append(dict(base, public_id=v, score_max=float(scores[i])))
+    df = pd.DataFrame(rows)
+    df["detector_of_origin"] = "s0"
+    return pd.DataFrame(gt)[C.GT_COLUMNS], df
+
+
+def test_b0_rank_leaves_the_unstable_tie_break_inert_on_a_realistic_pool():
+    """The property the reported 0.7889 rests on. B0-rank puts every set's rank-k on one grid
+    cell, so one might fear its swept curve is one long tie block; with realistic set sizes it
+    is not, and no `fp` carries two recalls."""
+    from abus_jcr.rescore.evaluate import b0_rank_probability
+    gt, df = _realistic_pool()
+    prob = b0_rank_probability(df["score_max"].to_numpy(float), df["public_id"].to_numpy())
+    assert _ambiguous_fp_count(gt, df, prob) == 0
+
+
+def test_b0_rank_cpm_does_not_depend_on_row_order():
+    """The direct test, and the one that would catch the hazard however it arose: shuffling the
+    prediction rows changes what an unstable sort produces, so an order-dependent CPM would
+    move. It must not."""
+    from abus_jcr.rescore.evaluate import b0_rank_probability
+    gt, df = _realistic_pool()
+    base = _cpm_of(gt, df, b0_rank_probability(df["score_max"].to_numpy(float),
+                                               df["public_id"].to_numpy()))
+    for s in (1, 2):
+        d2 = df.iloc[np.random.default_rng(s).permutation(len(df))].reset_index(drop=True)
+        got = _cpm_of(gt, d2, b0_rank_probability(d2["score_max"].to_numpy(float),
+                                                  d2["public_id"].to_numpy()))
+        assert got == pytest.approx(base, abs=1e-12)
+
+
+def test_the_hand_built_fixture_is_known_to_be_exposed():
+    """Documents WHY the fixtures above may only be used for same-process comparisons. If this
+    ever reads 0, the fixture changed and the warning in Part C can be relaxed."""
+    gt, df = _miscalibrated_pool()
+    assert _ambiguous_fp_count(gt, df, df["score_max"].to_numpy(float)) > 0
