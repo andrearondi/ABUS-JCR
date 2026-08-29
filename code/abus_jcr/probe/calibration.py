@@ -349,9 +349,24 @@ def headroom_curve(df: pd.DataFrame) -> dict:
 
 
 def assignments(df: pd.DataFrame, extra: Optional[dict] = None) -> dict:
-    """``{name: probability Series}`` for the three-way comparison; ``score_max`` first (B0')."""
+    """``{name: probability Series}`` for the reported decomposition; ``score_max`` first (B0').
+
+    ``volume_neutral_anchored`` is the **canonical** rank-neutral reading (2026-08-29). It is
+    always built with ``anchored=True``, never ``"auto"``: this row is reported as the
+    ``B0-rank`` baseline, so it has to be computable at inference, and ``"auto"`` inspects
+    ``label`` to choose its convention. The two agree on the iso pool — no set there has a
+    hitting rank-1 candidate in every volume — but agreeing by accident is not the same as
+    being label-free, and only one of the two can be written into a deployed system.
+
+    ``volume_neutral`` is kept alongside it as the **superseded floor**: it saturates the top
+    grid cell, so ``_interpolate_recall_at_fp`` returns 0 for every key rate below its cheapest
+    operating point and its reading understates the assignment by +0.0731 on the iso val pool
+    ([I3.11]). Nothing is deleted; both readings are reported and the gap between them is the
+    measured size of the artefact.
+    """
     out = {"score_max": df["score_max"].astype(float),
            "volume_neutral": volume_neutral_probability(df),
+           "volume_neutral_anchored": volume_neutral_probability(df, anchored=True),
            "per_vol_oracle": per_volume_oracle_probability(df)}
     if extra:
         out.update(extra)

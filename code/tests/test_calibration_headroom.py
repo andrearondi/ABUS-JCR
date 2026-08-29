@@ -76,8 +76,32 @@ def test_headroom_curve_matches_the_hand_knapsack():
 def test_assignments_keeps_score_max_untouched():
     df = _pool({1: ["pos", "neg"]})
     a = assignments(df)
-    assert set(a) == {"score_max", "volume_neutral", "per_vol_oracle"}
+    assert set(a) == {"score_max", "volume_neutral", "volume_neutral_anchored", "per_vol_oracle"}
     assert np.allclose(a["score_max"].to_numpy(), df["score_max"].to_numpy())
+
+
+def test_assignments_carries_the_anchored_rank_row():
+    """[I3.11] measured the unanchored reading as a FLOOR (+0.0731 below the anchored one on
+    the iso val pool), so the reported decomposition has to carry both: the anchored row is
+    canonical from 2026-08-29, the unanchored one stays as the superseded floor."""
+    df = _pool({1: ["neg", "pos"], 2: ["neg", "neg", "pos"]})
+    a = assignments(df)
+    plain = a["volume_neutral"].to_numpy(float)
+    anch = a["volume_neutral_anchored"].to_numpy(float)
+    assert float(plain.max()) == pytest.approx(TOP)          # saturates the top cell
+    assert float(anch.max()) == pytest.approx(TOP - GRID)    # leaves it empty: the anchor
+    np.testing.assert_allclose(anch, plain - GRID)
+
+
+def test_assignments_anchored_row_never_reads_labels():
+    """It is reported as the B0-rank BASELINE, so it must be computable at inference.
+    ``anchored="auto"`` inspects ``label`` to pick its convention and therefore must NOT be
+    the wiring behind this row, however identical the two happen to be on the iso pool."""
+    df = _pool({1: ["neg", "pos"], 2: ["neg", "neg", "pos"]})
+    flipped = df.copy()
+    flipped["label"] = ["pos", "neg", "pos", "pos", "neg"]
+    np.testing.assert_allclose(assignments(df)["volume_neutral_anchored"].to_numpy(float),
+                               assignments(flipped)["volume_neutral_anchored"].to_numpy(float))
 
 
 # ---- Part B: end-to-end through the OFFICIAL evaluator ------------------------
@@ -314,3 +338,59 @@ def test_global_monotone_needs_at_most_one_level_per_key_fp():
     gt, df = _eight_volume_pool()
     levels = np.round((TOP - global_monotone_probability(df, n_vol=8).to_numpy()) / GRID)
     assert len(set(levels.tolist())) <= len(C.KEY_FP) + 1
+
+
+# ---- Part C: the B0-rank baseline, end to end ---------------------------------
+# The claim [I3.11] licenses: on a pool where the within-set ranking is good but the score
+# LEVELS are adversarial across volumes, replacing the score with its within-set rank beats
+# the raw score through the OFFICIAL evaluator. That is the whole reason B0-rank is reported
+# as a baseline rather than a diagnostic, so it gets pinned here rather than argued.
+
+def test_b0_rank_beats_score_max_when_levels_are_adversarial():
+    from abus_jcr.rescore.evaluate import b0_rank_probability
+    gt, df = _miscalibrated_pool()
+    rank = b0_rank_probability(df["score_max"].to_numpy(float), df["public_id"].to_numpy())
+    assert _cpm_of(gt, df, rank) > _cpm_of(gt, df, df["score_max"].to_numpy(float))
+
+
+def test_b0_rank_carries_a_paired_interval_against_b0():
+    """Inv. 12: B0-rank is REPORTED, so it needs a CI, and the pool is identical between the
+    two conditions (only `probability` moves), which is exactly what the paired estimator is
+    for. Deliberately tiny draw count: each draw is two oracle calls, so this pins that the
+    call composes and returns a coherent interval, NOT the interval's width. The reported
+    number runs at n_boot=1000 in `phase3_baseline_froc`."""
+    from abus_jcr.eval.froc import paired_bootstrap_delta
+    from abus_jcr.rescore.evaluate import b0_rank_probability
+    gt, df = _miscalibrated_pool()
+
+    def _pred(prob):
+        p = pd.DataFrame({c: df[c] for c in C.GT_COLUMNS})
+        p["probability"] = np.clip(np.asarray(prob, float), 0, 1 - 1e-9)
+        return p[C.PRED_COLUMNS]
+
+    d = paired_bootstrap_delta(gt, _pred(b0_rank_probability(df["score_max"].to_numpy(float),
+                                                             df["public_id"].to_numpy())),
+                               _pred(df["score_max"].to_numpy(float)), n_boot=6, seed=0)
+    assert d["delta_point"] > 0
+    assert d["lo"] <= d["delta_point"] <= d["hi"]
+    assert 0.0 <= d["frac_positive"] <= 1.0
+
+
+def test_b0_rank_equals_the_anchored_assignment_through_the_evaluator():
+    """Parity again, but at the level that matters: the same CPM, not just the same array."""
+    from abus_jcr.rescore.evaluate import b0_rank_probability
+    gt, df = _miscalibrated_pool()
+    a = _cpm_of(gt, df, b0_rank_probability(df["score_max"].to_numpy(float),
+                                            df["public_id"].to_numpy()))
+    b = _cpm_of(gt, df, assignments(df)["volume_neutral_anchored"].to_numpy())
+    assert a == pytest.approx(b)
+
+
+def test_the_unanchored_reading_is_a_floor_not_the_value():
+    """Why the recorded [I3.7] row moved: the unanchored column saturates the top grid cell,
+    so the swept curve has no empty-set point and the lowest key rates read 0. It can only
+    ever under-read the same ranking, never over-read it."""
+    gt, df = _miscalibrated_pool()
+    a = assignments(df)
+    assert (_cpm_of(gt, df, a["volume_neutral_anchored"].to_numpy())
+            >= _cpm_of(gt, df, a["volume_neutral"].to_numpy()) - 1e-12)

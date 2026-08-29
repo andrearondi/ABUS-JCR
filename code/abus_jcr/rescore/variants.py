@@ -83,6 +83,18 @@ COMPARISONS = (("FULL", "B2"), ("A1", "B2"), ("A2", "B2"), ("B2", "B1"), ("B1", 
 #: only the set module. Without both, a gain at ``FULL-P`` is unattributable.
 COMPARISONS_POOLED = (("FULL-P", "B2"), ("FULL-P", "FULL"), ("A2-P", "A2"), ("FULL-P", "B1-P"))
 
+#: Against ``B0-rank``, the label-free within-set-rank floor (added 2026-08-29 after [I3.11]
+#: measured it at 0.7889 ± 0.0209 against B0' 0.7062 ± 0.0146, up in 3/3 seeds).
+#:
+#: NOT pre-registered, and deliberately kept out of :data:`COMPARISONS` so the primary
+#: comparison fixed in advance stays what it was. But it is the one that decides whether the
+#: work is *useful*: ``B0-rank`` costs nothing, needs no labels and ships in five lines, so a
+#: rung that clears B0' and not this has bought nothing. Report it next to the primary.
+#:
+#: ``B0-rank`` is not a :data:`VARIANTS` entry — nothing is trained. ``phase4_eval_grid``
+#: builds it inline from the frozen pool, like ``B0-spread``.
+COMPARISONS_FLOOR = (("FULL", "B0-rank"), ("FULL-P", "B0-rank"), ("B2", "B0-rank"))
+
 
 def trials_for(variant: str, b2_choice: Optional[Dict] = None) -> List[Dict]:
     """The **exactly 4** hyperparameter trials this rung is allowed (§4.6).

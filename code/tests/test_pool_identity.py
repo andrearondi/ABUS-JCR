@@ -17,7 +17,8 @@ import pytest
 
 from abus_jcr import conventions as C
 from abus_jcr.candidates.record import CANDIDATE_COLUMNS, to_official_pred_csv
-from abus_jcr.rescore.evaluate import assert_pool_identity, b0_spread_probability
+from abus_jcr.rescore.evaluate import (assert_pool_identity, b0_rank_probability,
+                                       b0_spread_probability)
 
 
 def _record(n=12, seed=0):
@@ -134,3 +135,92 @@ def test_probability_clamp_constant_is_respected():
     from abus_jcr.rescore.losses import to_probability
     p = to_probability(np.array([1e9]))
     assert float(p[0]) <= 1.0 - C.RESC_PROB_EPS + 1e-15
+
+
+# --------------------------------------------------------------------------- B0-rank
+# The `B0-rank` baseline (added 2026-08-29 after [I3.11]): replace the detector's score with
+# its WITHIN-SET rank. Label-free, zero-parameter, deployable — and on the iso val pool it
+# scores 0.7889 +- 0.0209 against B0' 0.7062 +- 0.0146, so it is a BASELINE the rescorer has
+# to clear, not a diagnostic. The anchor (top grid cell left empty) is the whole finding: it
+# is what gives the swept curve its empty-set operating point.
+
+def test_b0_rank_discards_cross_set_level():
+    """Two sets whose scores live on completely different scales but share a within-set order
+    must come out IDENTICAL — that is what "cross-volume confidence discarded" means."""
+    prob = np.array([0.90, 0.60, 0.30,      # set 100, high band
+                     0.09, 0.06, 0.03])     # set 101, low band
+    pid = np.array([100, 100, 100, 101, 101, 101])
+    p = b0_rank_probability(prob, pid)
+    np.testing.assert_allclose(p[:3], p[3:])
+
+
+def test_b0_rank_preserves_order_inside_a_set():
+    prob = np.array([0.10, 0.50, 0.30])
+    pid = np.array([7, 7, 7])
+    p = b0_rank_probability(prob, pid)
+    assert p[1] > p[2] > p[0]
+
+
+def test_b0_rank_leaves_the_top_grid_cell_empty():
+    """THE anchor. `_interpolate_recall_at_fp` returns 0 for every key FP below the cheapest
+    achievable one, so a column that saturates the top cell has no empty-set point and its
+    three lowest key rates are forced to zero. Every real probability column has this anchor;
+    the unanchored reading is what made the recorded [I3.7] volume_neutral a floor."""
+    from abus_jcr.probe.calibration import GRID, TOP
+    p = b0_rank_probability(np.array([0.9, 0.5]), np.array([1, 1]))
+    assert float(p.max()) <= TOP - GRID + 1e-12
+    assert float(p.max()) == pytest.approx(TOP - GRID)
+
+
+def test_b0_rank_lands_on_the_official_threshold_grid():
+    from abus_jcr.probe.calibration import GRID
+    p = b0_rank_probability(np.linspace(0.9, 0.1, 9), np.zeros(9, dtype=int))
+    np.testing.assert_allclose(p / GRID, np.round(p / GRID), atol=1e-9)
+
+
+def test_b0_rank_clips_a_set_deeper_than_the_grid_at_zero():
+    """A train set can hold 343 candidates against 198 usable grid cells. The tail must clip
+    at 0, never go negative — `to_official_pred_csv` requires probability in [0, 1)."""
+    from abus_jcr.probe.calibration import N_LEVELS
+    n = N_LEVELS + 50
+    p = b0_rank_probability(np.linspace(1.0, 0.0, n), np.zeros(n, dtype=int))
+    assert float(p.min()) >= 0.0
+    assert float(p[-1]) == 0.0
+
+
+def test_b0_rank_output_is_accepted_by_the_official_writer():
+    rec = _record().copy()
+    rec["prob_rank"] = b0_rank_probability(rec["score_max"].to_numpy(),
+                                           rec["public_id"].to_numpy())
+    pred = to_official_pred_csv(rec, "prob_rank")
+    assert ((pred["probability"] >= 0.0) & (pred["probability"] < 1.0)).all()
+
+
+def test_b0_rank_breaks_ties_deterministically():
+    prob = np.array([0.2, 0.2, 0.2])
+    pid = np.zeros(3, dtype=int)
+    a, b = b0_rank_probability(prob, pid), b0_rank_probability(prob, pid)
+    np.testing.assert_array_equal(a, b)
+    assert len(set(a.tolist())) == 3        # distinct ranks, stable by row order
+
+
+def test_b0_rank_matches_the_diagnostic_anchored_assignment():
+    """PARITY. `rescore/evaluate` (deployed path) and `probe/calibration` (diagnostic path)
+    must agree exactly, or [I3.7]'s re-measured row and the [4.7] B0-rank rung would be two
+    different rules wearing one name."""
+    from abus_jcr.probe.calibration import volume_neutral_probability
+    rec = _record(n=24, seed=3)
+    mine = b0_rank_probability(rec["score_max"].to_numpy(), rec["public_id"].to_numpy())
+    theirs = volume_neutral_probability(rec, anchored=True).to_numpy(float)
+    np.testing.assert_allclose(mine, theirs)
+
+
+def test_b0_rank_never_reads_labels():
+    """It is a BASELINE, so it must be computable at inference. Permuting the label column
+    cannot move it — this is what rules out the label-reading ``anchored="auto"`` path."""
+    rec = _record(n=24, seed=4)
+    a = b0_rank_probability(rec["score_max"].to_numpy(), rec["public_id"].to_numpy())
+    shuffled = rec.copy()
+    shuffled["label"] = list(reversed(rec["label"].tolist()))
+    b = b0_rank_probability(shuffled["score_max"].to_numpy(), shuffled["public_id"].to_numpy())
+    np.testing.assert_array_equal(a, b)

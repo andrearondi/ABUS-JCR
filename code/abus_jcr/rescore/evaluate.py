@@ -29,8 +29,8 @@ from ..candidates.record import to_official_pred_csv
 from ..eval.froc import (bootstrap_cpm_ci, cpm, evaluate_froc, key_recall,
                          paired_bootstrap_delta, recall_ceiling)
 
-__all__ = ["assert_pool_identity", "b0_spread_probability", "evaluate_variant",
-           "score_pool", "compare_variants", "seed_summary"]
+__all__ = ["assert_pool_identity", "b0_rank_probability", "b0_spread_probability",
+           "evaluate_variant", "score_pool", "compare_variants", "seed_summary"]
 
 #: The pred-CSV columns that must be byte-identical across rungs (everything but the score).
 _FROZEN_PRED_COLUMNS = ["public_id", "coordX", "coordY", "coordZ",
@@ -69,6 +69,45 @@ def b0_spread_probability(prob) -> np.ndarray:
         return p
     r = pd.Series(p).rank(method="average").to_numpy(float) - 1.0
     return np.clip((r + 0.5) / float(n), 0.0, 1.0 - C.RESC_PROB_EPS)
+
+
+#: Official ``det_score`` threshold sweep: ``np.arange(0, 1, 0.005)``. Mirrors
+#: ``probe.calibration.GRID``/``TOP``; ``tests/test_pool_identity`` pins the two together.
+_GRID, _TOP = 0.005, 0.995
+
+
+def b0_rank_probability(prob, set_ids) -> np.ndarray:
+    """The ``B0-rank`` baseline: replace the detector's score with its **within-set rank**.
+
+    ``p = 0.995 - 0.005 * rank``, the same map for every set, so thresholding at ``p(k)`` keeps
+    exactly the top-``k`` of every volume and the swept curve is the top-k-per-volume curve.
+    Label-free, zero-parameter, and computable at inference from the set the rescorer already
+    conditions on — a real deployable rule, not a headroom bound.
+
+    It exists because [I3.11] measured it: **0.7889 ± 0.0209 against B0' 0.7062 ± 0.0146**, up in
+    3/3 seeds. The detector's cross-volume confidence is not merely uninformative, it is
+    actively harmful, and a rescorer that only clears B0' has not cleared the cheapest thing
+    anyone could do instead. So this is reported as a rung, not as a diagnostic.
+
+    **Rank 1 lands at 0.990, never 0.995.** Leaving the top grid cell empty is what supplies the
+    empty-set operating point that ``_interpolate_recall_at_fp`` needs: without it the function
+    returns 0 for every key FP below the cheapest achievable one, which on the iso val pool
+    zeroes the three lowest key rates and understates the rule by 0.073. Ranks deeper than the
+    grid (a train set may hold 343 candidates against 198 cells) clip at 0.
+
+    Ties in ``prob`` take distinct consecutive ranks, broken by row order — deterministic, and
+    matching ``probe.calibration.volume_neutral_probability`` exactly (pinned by a parity test).
+    """
+    p = np.asarray(prob, dtype=float)
+    sids = np.asarray(set_ids)
+    out = np.empty(p.size, dtype=float)
+    for s in pd.unique(sids):
+        idx = np.flatnonzero(sids == s)
+        order = (-p[idx]).argsort(kind="stable")          # stable: ties keep row order
+        rank = np.empty(idx.size, dtype=np.int64)
+        rank[order] = np.arange(1, idx.size + 1)
+        out[idx] = np.clip(_TOP - rank * _GRID, 0.0, _TOP)
+    return out
 
 
 def evaluate_variant(record_df: pd.DataFrame, prob, gt_df: pd.DataFrame, seed_tag: str,

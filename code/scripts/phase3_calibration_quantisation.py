@@ -84,8 +84,11 @@ def main() -> int:
     per_seed = []
     for det in sorted(pool["detector_of_origin"].unique()):
         sub = pool[pool["detector_of_origin"] == det].reset_index(drop=True)
+        # `volume_neutral_anchored` now comes from `assignments` itself (anchored=True, the
+        # label-free form). The 2026-08-27 run used anchored="auto", which resolves to the same
+        # thing on this pool — no set has a hitting rank-1 candidate in every volume — so the
+        # recorded [I3.11] numbers reproduce unchanged.
         probs = CAL.assignments(sub, extra={
-            "volume_neutral_anchored": CAL.volume_neutral_probability(sub, anchored="auto"),
             "global_monotone": CAL.global_monotone_probability(sub, n_vol=n_vol)})
         rec = {"detector": det, "n_candidates": int(len(sub))}
         for name in ROWS:
@@ -139,10 +142,12 @@ def main() -> int:
               "point, and\n    `_interpolate_recall_at_fp` returns 0 for every key rate below its "
               "cheapest operating point —\n    which costs one FP per set whose rank-1 candidate is "
               "not a hit. A real prediction column never\n    saturates 0.995, so it always has that "
-              "anchor. The recorded value is therefore a FLOOR for this\n    assignment, and "
-              "`volume_neutral - B0'` is understated by the gap above. The default is left "
-              "unchanged\n    on purpose (no recorded number moves silently) — changing it is a "
-              "user decision.")
+              "anchor, so the unanchored reading is a FLOOR, not the\n    value of the rule.")
+        print("    RESOLVED 2026-08-29: the anchored reading is canonical and is reported by "
+              "`phase3_baseline_froc`\n    as the `B0-rank` BASELINE with a paired bootstrap against "
+              "B0'. The unanchored row is kept as the\n    superseded floor. `volume_neutral_probability`"
+              "'s own default is still False so the primitive stays\n    a primitive; `assignments()` "
+              "is what carries the reported convention.")
 
     print("\n  The rows " + ", ".join(RECORDED) + " MUST reproduce the recorded [3.6] headroom block "
           "for this\n  substrate. A mismatch means this run read a different pool — stop and find "
