@@ -53,7 +53,7 @@ if not _TORCH_OK:  # pragma: no cover - laptop path
     class _NeedsTorch:
         def __init__(self, *args, **kwargs):
             raise ImportError("the Phase-4 encoder needs torch + monai; run it in the server env "
-                              "(/home/maia-user/Andre2/envs/abus-jcr).")
+                              "($SW/envs/abus-jcr).")
 
     CandidateEncoder = SmallCandidateEncoder = B1Head = PretrainModel = _NeedsTorch  # type: ignore
 

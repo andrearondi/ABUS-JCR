@@ -35,7 +35,7 @@ missed vs hit lesions, then writes ``outputs/phase3/step0_probe/missed_<label>.j
 
 Usage (server, GPU — reuses the [P3U.4b] op=0.005 detection cache if --label matches):
     python scripts/phase3_missed_lesion_probe.py \
-        --checkpoint /home/maia-user/Andre2/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
+        --checkpoint $WORK/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
         --label p3u_seed0_ep6 --op-thresh 0.03 --device cuda
 """
 

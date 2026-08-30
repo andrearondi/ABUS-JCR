@@ -9,7 +9,7 @@ conventions.py (B) must equal the Train-derived values). CUDA required.
 
 Usage (server):
     python scripts/phase2_train_retinanet.py --regime fold --fold 0 \
-        --phase1-out /home/maia-user/Andre2/outputs/phase1 --out-root /home/maia-user/Andre2/outputs/phase2
+        --phase1-out $WORK/outputs/phase1 --out-root $WORK/outputs/phase2
     python scripts/phase2_train_retinanet.py --regime full --seed 0 ...
 """
 

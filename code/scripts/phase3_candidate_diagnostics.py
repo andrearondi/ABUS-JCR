@@ -16,7 +16,7 @@ boxes, and reports everything needed to diagnose the recall/pool wall:
 
 Usage (server; CPU-fast if the [P3U.4b] cache is warm, else GPU to re-detect):
     python scripts/phase3_candidate_diagnostics.py \
-        --checkpoint /home/maia-user/Andre2/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
+        --checkpoint $WORK/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
         --label p3u_seed0_ep6 --op-thresh 0.03 --containment off --device cuda
 """
 

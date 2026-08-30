@@ -15,7 +15,7 @@ softer would let a rung look like a contribution for beating a number nobody wou
 superseded unanchored reading stays printed beside it as the floor it always was.
 
 Usage (server or local with the Val record present):
-    python scripts/phase3_baseline_froc.py --out-root /home/maia-user/Andre2/outputs/phase3
+    python scripts/phase3_baseline_froc.py --out-root $WORK/outputs/phase3
 """
 
 from __future__ import annotations

@@ -14,8 +14,8 @@ RESAMPLE_IOU_FLOOR (the FROC-hit safety margin) — the small-lesion tail ABOVE 
 floor is reported, not failed.
 
 Usage:
-    python scripts/phase1_resample_fidelity.py --split Train      --out-root /home/maia-user/Andre2/outputs/phase1
-    python scripts/phase1_resample_fidelity.py --split Validation --out-root /home/maia-user/Andre2/outputs/phase1
+    python scripts/phase1_resample_fidelity.py --split Train      --out-root $WORK/outputs/phase1
+    python scripts/phase1_resample_fidelity.py --split Validation --out-root $WORK/outputs/phase1
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from _common import add_split_args, resolve_split_root, split_label
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 1 resample-fidelity characterisation")
     add_split_args(parser)
-    parser.add_argument("--out-root", default="/home/maia-user/Andre2/outputs/phase1")
+    parser.add_argument("--out-root", default="$WORK/outputs/phase1")
     parser.add_argument("--cases", type=int, nargs="+", default=None)
     args = parser.parse_args()
 

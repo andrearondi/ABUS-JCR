@@ -6,7 +6,7 @@ hash-stable. Written to <out-root>/manifest.csv — the single source of truth f
 every later phase.
 
 Usage:
-    python scripts/phase1_build_manifest.py --data-root /home/maia-user/Andre2/data --out-root /home/maia-user/Andre2/outputs/phase1
+    python scripts/phase1_build_manifest.py --data-root $WORK/data --out-root $WORK/outputs/phase1
     # local (Validation only present):
     python scripts/phase1_build_manifest.py --data-root /Users/.../Dataset --out-root ./_p1_out
 """
@@ -19,8 +19,8 @@ from pathlib import Path
 
 from abus_jcr.manifest import build_manifest
 
-DEFAULT_DATA_ROOT = "/home/maia-user/Andre2/data"
-DEFAULT_OUT_ROOT = "/home/maia-user/Andre2/outputs/phase1"
+DEFAULT_DATA_ROOT = "$WORK/data"
+DEFAULT_OUT_ROOT = "$WORK/outputs/phase1"
 
 # official split-name -> canonical key
 _SPLIT_DIRS = {"Train": "train", "Validation": "val", "Test": "test"}

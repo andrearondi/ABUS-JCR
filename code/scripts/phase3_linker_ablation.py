@@ -21,7 +21,7 @@ Axes swept (one-at-a-time ablation + a few bundles):
 
 Usage (server, GPU only if the cache is cold; else CPU-fast):
     python scripts/phase3_linker_ablation.py \
-        --checkpoint /home/maia-user/Andre2/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
+        --checkpoint $WORK/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
         --label p3u_seed0_ep6 --op-thresh 0.03 --device cuda
 """
 

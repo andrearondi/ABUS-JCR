@@ -12,8 +12,8 @@ RESAMPLE_IOU_FLOOR (0.50). Must PASS before [3.5].
 
 Usage (server):
     python scripts/phase3_gt_reconstruction_check.py \
-        --phase1-out /home/maia-user/Andre2/outputs/phase1 \
-        --out-root  /home/maia-user/Andre2/outputs/phase3 --split train
+        --phase1-out $WORK/outputs/phase1 \
+        --out-root  $WORK/outputs/phase3 --split train
 """
 
 from __future__ import annotations

@@ -21,8 +21,8 @@ came back byte-identical to the pre-promotion paste. ``--run-suffix`` is now ava
 every run — check it.
 
 Usage (server or local, wherever outputs/phase3/detections_cache/ lives):
-    python scripts/phase3_tube_stats.py --out-root /home/maia-user/Andre2/outputs/phase3 \
-        --data-root /home/maia-user/Andre2/data --seed 0 --op-score-thresh 0.03
+    python scripts/phase3_tube_stats.py --out-root $WORK/outputs/phase3 \
+        --data-root $WORK/data --seed 0 --op-score-thresh 0.03
     # a parallel (non-deployed) arm:
     python scripts/phase3_tube_stats.py ... --run-suffix latflip
 """

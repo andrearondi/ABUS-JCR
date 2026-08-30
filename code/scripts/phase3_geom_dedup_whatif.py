@@ -13,8 +13,8 @@ Baselines: no-dedup, and the score-based centre-distance / IoU-NMS controls (to 
 geometry beats score at the same mechanism).
 
 Usage (wherever outputs/phase3/detections_cache/ lives):
-    python scripts/phase3_geom_dedup_whatif.py --out-root /home/maia-user/Andre2/outputs/phase3 \
-        --data-root /home/maia-user/Andre2/data --seed 0 --op-score-thresh 0.03
+    python scripts/phase3_geom_dedup_whatif.py --out-root $WORK/outputs/phase3 \
+        --data-root $WORK/data --seed 0 --op-score-thresh 0.03
 """
 
 from __future__ import annotations

@@ -20,7 +20,7 @@ is its IoU 0.07?": for a candidate that CONTAINS the GT, IoU is exactly ``1 / (b
 
 Usage (LOCAL-capable — needs no GPU, just the record):
     python scripts/phase3_pool_diagnostics.py \
-        --out-root /home/maia-user/Andre2/outputs/phase3 --split both
+        --out-root $WORK/outputs/phase3 --split both
 """
 
 from __future__ import annotations
@@ -606,9 +606,9 @@ def main() -> int:
     ap.add_argument("--bg-slab", type=int, default=0,
                     help="for --bg mip/minip: project only this many slices centred on the GT "
                          "(0 = the whole axis, the old behaviour)")
-    ap.add_argument("--data-root", default="/home/maia-user/Andre2/data",
+    ap.add_argument("--data-root", default="$WORK/data",
                     help="dataset root holding the split dirs (for EXACT official GT boxes)")
-    ap.add_argument("--phase1-out", default="/home/maia-user/Andre2/outputs/phase1",
+    ap.add_argument("--phase1-out", default="$WORK/outputs/phase1",
                     help="Phase-1 out (cache/ = iso volume + GT mask, for the volume background)")
     args = ap.parse_args()
 

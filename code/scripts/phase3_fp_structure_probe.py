@@ -6,7 +6,7 @@ Phase-4 geometry-term claim scope: structure PRESENT -> "relational"; ABSENT ->
 "set-level contextual calibration".
 
 Usage:
-    python scripts/phase3_fp_structure_probe.py --out-root /home/maia-user/Andre2/outputs/phase3
+    python scripts/phase3_fp_structure_probe.py --out-root $WORK/outputs/phase3
 """
 
 from __future__ import annotations

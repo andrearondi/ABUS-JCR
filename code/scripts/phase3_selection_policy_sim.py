@@ -23,7 +23,7 @@ Every policy respects the run's own ``min_epoch`` floor.
 
 Usage (server or laptop, wherever the selection JSONs are):
     python scripts/phase3_selection_policy_sim.py \
-        --selection-dir /home/maia-user/Andre2/outputs/phase3/selection --pool-budget 230
+        --selection-dir $WORK/outputs/phase3/selection --pool-budget 230
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def _tied_block(info: dict, tol: float):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="[P3U2.SIM] selection-policy simulation (read-only)")
-    ap.add_argument("--selection-dir", default="/home/maia-user/Andre2/outputs/phase3/selection")
+    ap.add_argument("--selection-dir", default="$WORK/outputs/phase3/selection")
     ap.add_argument("--pool-budget", type=float, default=float(C.RESCORER_POOL_BUDGET),
                     help=f"max cands/vol a policy may accept (default RESCORER_POOL_BUDGET={C.RESCORER_POOL_BUDGET})")
     ap.add_argument("--floors", default="0.80,0.85,0.90", help="comma-separated recall floors to simulate")

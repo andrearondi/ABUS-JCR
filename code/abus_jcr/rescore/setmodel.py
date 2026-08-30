@@ -45,7 +45,7 @@ if not _TORCH_OK:  # pragma: no cover - laptop path
     class _NeedsTorch:
         def __init__(self, *args, **kwargs):
             raise ImportError("the Phase-4 set module needs torch; run it in the server env "
-                              "(/home/maia-user/Andre2/envs/abus-jcr).")
+                              "($SW/envs/abus-jcr).")
 
     SAB = RGFrocRescorer = B1Rescorer = _NeedsTorch  # type: ignore[misc,assignment]
 

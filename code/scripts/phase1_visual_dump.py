@@ -26,7 +26,7 @@ from abus_jcr import conventions as C
 from abus_jcr.conventions import SLICE_AXIS
 from abus_jcr.slice_labels import boxes_for_slice
 
-DEFAULT_OUT_ROOT = "/home/maia-user/Andre2/outputs/phase1"
+DEFAULT_OUT_ROOT = "$WORK/outputs/phase1"
 
 
 def _lesion_slices(mask_iso: np.ndarray):

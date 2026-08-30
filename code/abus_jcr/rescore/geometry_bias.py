@@ -179,4 +179,4 @@ else:  # pragma: no cover - laptop path
 
         def __init__(self, *args, **kwargs):
             raise ImportError("GeometryBias needs torch; run it in the server env "
-                              "(/home/maia-user/Andre2/envs/abus-jcr).")
+                              "($SW/envs/abus-jcr).")

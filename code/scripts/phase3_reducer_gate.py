@@ -19,7 +19,7 @@ nms=off) must reproduce the [P3U.4f] `all_off` recovery (recall 0.933 @ pool_MAX
 
 Usage (server; CPU-fast if the [P3U.4b] cache is warm, else GPU to re-detect):
     python scripts/phase3_reducer_gate.py \
-        --checkpoint /home/maia-user/Andre2/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
+        --checkpoint $WORK/outputs/phase2/checkpoints/retinanet_full_seed0.pt \
         --label p3u_seed0_ep6 --op-thresh 0.03 --device cuda
 """
 

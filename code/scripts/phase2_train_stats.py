@@ -8,8 +8,8 @@ change in RESULTS_PHASE_2.md [2.0] before running [2.1]+. This script does not
 mutate conventions.py — reconciliation is a human decision (Inv. 9).
 
 Usage (server):
-    python scripts/phase2_train_stats.py --phase1-out /home/maia-user/Andre2/outputs/phase1 \
-        --out-root /home/maia-user/Andre2/outputs/phase2
+    python scripts/phase2_train_stats.py --phase1-out $WORK/outputs/phase1 \
+        --out-root $WORK/outputs/phase2
 Local Val smoke (method check only — NOT a design decision):
     python scripts/phase2_train_stats.py --phase1-out ./_p1_out --out-root ./_p2_out --probe-split val
 """

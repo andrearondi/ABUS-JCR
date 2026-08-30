@@ -5,7 +5,7 @@ measures cost at the fixed input ``(1, C, DET_MIN_SIZE, DET_MAX_SIZE)`` on the
 A6000, writes ``phase2_cost.json`` and echoes a Markdown block for RESULTS.
 
 Usage (server):
-    python scripts/phase2_cost.py --out-root /home/maia-user/Andre2/outputs/phase2 --device cuda
+    python scripts/phase2_cost.py --out-root $WORK/outputs/phase2 --device cuda
 """
 
 from __future__ import annotations

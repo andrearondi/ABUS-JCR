@@ -31,8 +31,8 @@ deployable ranking, or an input to any decision.
 
 Usage:
     python scripts/phase3_calibration_quantisation.py \
-        --out-root /home/maia-user/Andre2/outputs_iso/phase3 \
-        --data-root /home/maia-user/Andre2/data
+        --out-root $WORK/outputs_iso/phase3 \
+        --data-root $WORK/data
 """
 
 from __future__ import annotations

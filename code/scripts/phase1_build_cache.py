@@ -5,8 +5,8 @@ to a hash-named cache directory (see abus_jcr.cache). Train + Validation only;
 the Test cache is deferred to Phase 5 (Inv. 9). CPU-only, no GPU.
 
 Usage:
-    python scripts/phase1_build_cache.py --split Train      --out-root /home/maia-user/Andre2/outputs/phase1
-    python scripts/phase1_build_cache.py --split Validation --out-root /home/maia-user/Andre2/outputs/phase1
+    python scripts/phase1_build_cache.py --split Train      --out-root $WORK/outputs/phase1
+    python scripts/phase1_build_cache.py --split Validation --out-root $WORK/outputs/phase1
     # local Validation:
     python scripts/phase1_build_cache.py --split-root /path/to/Validation --out-root ./_p1_out
 """
@@ -25,7 +25,7 @@ from abus_jcr.io_nrrd import discover_cases, load_array
 from abus_jcr.preprocess import resample_case, preprocess_hash, iso_shape
 from _common import add_split_args, resolve_split_root, split_label
 
-DEFAULT_OUT_ROOT = "/home/maia-user/Andre2/outputs/phase1"
+DEFAULT_OUT_ROOT = "$WORK/outputs/phase1"
 
 
 def main() -> int:

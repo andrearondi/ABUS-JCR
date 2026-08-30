@@ -25,13 +25,22 @@ from abus_jcr.rescore.datasets import collate_sets, group_sets
 from abus_jcr.rescore.losses import encode_labels
 from abus_jcr.rescore.tokens import apply_standardiser, build_feature_matrix, fit_standardiser
 
+from _common import _default_root
+
 # Re-pointed to the isotropic substrate 2026-08-25 (CLAUDE.md -> "THE SUBSTRATE").
 # These were `outputs/` (the frozen legacy arm); a forgotten --phase1-out silently
 # resolved there. `cache_root` below now also refuses a foreign cache by name.
-DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs_iso/phase1"
-DEFAULT_PHASE3_OUT = "/home/maia-user/Andre2/outputs_iso/phase3"
-DEFAULT_PHASE4_OUT = "/home/maia-user/Andre2/outputs_iso/phase4"
-DEFAULT_DATA_ROOT = "/home/maia-user/Andre2/data"
+#
+# Re-pointed again 2026-08-31, this time at the MACHINE. The literals named
+# `/home/maia-user`, the pre-migration home, so on the current server every default was a
+# path that does not exist -- which is how `[4.2]` died minutes into a GPU job, forwarding
+# `--data-root /home/maia-user/Andre2/data` to the encoder pretrain it wraps. `$WORK` is set
+# by ~/.bashrc AND re-exported by the sbatch harness, so deriving from it is correct in an
+# interactive shell and inside a job. See `_default_root`.
+DEFAULT_PHASE1_OUT = _default_root("outputs_iso/phase1")
+DEFAULT_PHASE3_OUT = _default_root("outputs_iso/phase3")
+DEFAULT_PHASE4_OUT = _default_root("outputs_iso/phase4")
+DEFAULT_DATA_ROOT = _default_root("data")
 
 _SPLIT_DIR = {"train": "Train", "val": "Validation"}   # Test is Phase 5 only (Inv. 9)
 

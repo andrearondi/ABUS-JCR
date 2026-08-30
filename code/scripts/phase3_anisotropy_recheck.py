@@ -19,7 +19,7 @@ encoder anything.
 
 Usage:
     python scripts/phase3_anisotropy_recheck.py \
-        --out-root /home/maia-user/Andre2/outputs/phase3 --split both
+        --out-root $WORK/outputs/phase3 --split both
 """
 
 from __future__ import annotations

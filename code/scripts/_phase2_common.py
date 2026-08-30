@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
-DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs/phase1"
-DEFAULT_PHASE2_OUT = "/home/maia-user/Andre2/outputs/phase2"
+DEFAULT_PHASE1_OUT = "$WORK/outputs/phase1"
+DEFAULT_PHASE2_OUT = "$WORK/outputs/phase2"
 
 
 def add_phase2_paths(parser: argparse.ArgumentParser) -> None:
@@ -48,7 +48,7 @@ def assert_device(device: str) -> None:
             f"(is_available=False, device_count={torch.cuda.device_count()}).\n"
             "You are almost certainly on a CPU-only node (check `nvidia-smi`). "
             "Move to the A6000 GPU host, `conda activate "
-            "/home/maia-user/Andre2/envs/abus-jcr`, verify "
+            "$SW/envs/abus-jcr`, verify "
             "`python -c \"import torch; print(torch.cuda.is_available())\"` prints True, "
             "then re-run. (The [2.0b] Train-stats probe is CPU-only and can run anywhere.)"
         )

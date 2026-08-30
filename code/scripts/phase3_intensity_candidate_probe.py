@@ -17,8 +17,8 @@ resampling assumption is inherited.
 
 Usage (server):
     python scripts/phase3_intensity_candidate_probe.py \
-        --out-root  /home/maia-user/Andre2/outputs/phase3 \
-        --data-root /home/maia-user/Andre2/data --split val
+        --out-root  $WORK/outputs/phase3 \
+        --data-root $WORK/data --split val
 
 Usage (laptop, Validation only):
     python scripts/phase3_intensity_candidate_probe.py \

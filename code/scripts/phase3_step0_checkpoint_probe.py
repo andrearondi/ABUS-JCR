@@ -15,7 +15,7 @@ RESULTS_PHASE_3 [3.4] (recall/pool) and [3.4b] (CPM 0.2095 @ 0.03).
 
 Usage (server, GPU):
     python scripts/phase3_step0_checkpoint_probe.py \
-        --checkpoint /home/maia-user/Andre2/outputs/_archive/phase2_ap_selection_seed0/retinanet_full_seed0.pt \
+        --checkpoint $WORK/outputs/_archive/phase2_ap_selection_seed0/retinanet_full_seed0.pt \
         --label ap_seed0 --device cuda
 """
 

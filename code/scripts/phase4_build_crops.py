@@ -11,9 +11,9 @@ never truncate a frozen pool.
 
 Usage:
     python scripts/phase4_build_crops.py --splits train val \\
-        --phase1-out /home/maia-user/Andre2/outputs/phase1 \\
-        --phase3-out /home/maia-user/Andre2/outputs/phase3 \\
-        --out-root  /home/maia-user/Andre2/outputs/phase4
+        --phase1-out $WORK/outputs/phase1 \\
+        --phase3-out $WORK/outputs/phase3 \\
+        --out-root  $WORK/outputs/phase4
 """
 
 from __future__ import annotations

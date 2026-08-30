@@ -7,8 +7,8 @@ CSV mirror. Also reports the lesion-bearing vs background slice balance for the
 results log.
 
 Usage:
-    python scripts/phase1_build_slice_labels.py --split Train      --out-root /home/maia-user/Andre2/outputs/phase1
-    python scripts/phase1_build_slice_labels.py --split Validation --out-root /home/maia-user/Andre2/outputs/phase1
+    python scripts/phase1_build_slice_labels.py --split Train      --out-root $WORK/outputs/phase1
+    python scripts/phase1_build_slice_labels.py --split Validation --out-root $WORK/outputs/phase1
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from abus_jcr.io_nrrd import discover_cases
 from abus_jcr.slice_labels import build_slice_labels
 from _common import add_split_args, resolve_split_root, split_label
 
-DEFAULT_OUT_ROOT = "/home/maia-user/Andre2/outputs/phase1"
+DEFAULT_OUT_ROOT = "$WORK/outputs/phase1"
 
 _COLS = ["volume_id", "slice_z", "r0", "c0", "r1", "c1", "component_id"]
 

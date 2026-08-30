@@ -28,10 +28,21 @@ from abus_jcr.link.reconstruct import iso_tube_to_official
 from abus_jcr.link.aggregate import score_stats
 from abus_jcr.link.nms import reduce_pool_3dnms
 
-DEFAULT_PHASE1_OUT = "/home/maia-user/Andre2/outputs/phase1"
-DEFAULT_PHASE2_OUT = "/home/maia-user/Andre2/outputs/phase2"
-DEFAULT_PHASE3_OUT = "/home/maia-user/Andre2/outputs/phase3"
-DEFAULT_DATA_ROOT = "/home/maia-user/Andre2/data"
+from _common import _default_root
+
+# Machine-relative since 2026-08-31: the literals named `/home/maia-user`, the pre-migration
+# home, so every default resolved to a path that does not exist on the current server. See
+# `_common._default_root`.
+#
+# NOTE the arm: these still say `outputs/`, the FROZEN LEGACY arm, not `outputs_iso/`. That is
+# deliberately left alone rather than quietly re-pointed — the Phase-3 runbook lines all pass
+# `--out-root $WORK/outputs_iso/phase3` explicitly, and silently changing which substrate a
+# forgotten flag lands on is exactly the class of drift CLAUDE.md forbids. `cache_root` below
+# refuses a foreign cache by name, so a mismatch is caught rather than mixed.
+DEFAULT_PHASE1_OUT = _default_root("outputs/phase1")
+DEFAULT_PHASE2_OUT = _default_root("outputs/phase2")
+DEFAULT_PHASE3_OUT = _default_root("outputs/phase3")
+DEFAULT_DATA_ROOT = _default_root("data")
 
 _SPLIT_DIR = {"train": "Train", "val": "Validation", "test": "Test"}
 

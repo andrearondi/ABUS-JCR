@@ -6,7 +6,7 @@ the full [3.3'] freeze (which needs the retrained fold detectors). Reuses the ex
 ``derive_link_caps`` that [3.3'] uses, so the values match.
 
 Usage:
-    python scripts/phase3_derive_caps.py --phase1-out /home/maia-user/Andre2/outputs/phase1
+    python scripts/phase3_derive_caps.py --phase1-out $WORK/outputs/phase1
 """
 
 from __future__ import annotations
