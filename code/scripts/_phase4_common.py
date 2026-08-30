@@ -150,6 +150,39 @@ def split_root(args, split: str) -> Path:
     return Path(args.data_root) / _SPLIT_DIR[split]
 
 
+def loader_kwargs(num_workers: int, prefetch_factor: int = 4) -> Dict:
+    """Throughput settings for a multi-epoch ``DataLoader`` over :class:`CropDataset`.
+
+    **Why this exists.** `jobgraph` on job 17424998 (2026-08-30) measured **1.99 % GPU
+    utilisation** over 70 minutes: a flat-zero trace with one spike per epoch, which is the
+    validation pass reading a pre-materialised in-RAM array. Training never registered.
+    Epochs ran at 13 minutes, i.e. ~800 ms per item per worker against a trilinear resample
+    that costs single-digit milliseconds — the loop is bound on per-item re-extraction from a
+    volume memmapped over network storage, not on compute. Two consequences: NSC's efficiency
+    reaper killed the job at 69.4 W, and `[4.2]` would have needed 13.1 h against a 12 h
+    walltime even without it.
+
+    ``persistent_workers`` is the load-bearing one. Without it the workers, and with them
+    ``CropDataset._vol_cache``, are torn down and rebuilt on **every epoch**.
+
+    **None of these can move a result.** They change only when and where an item is produced;
+    ``CropDataset`` seeds augmentation as ``default_rng((seed, i))``, per item index rather
+    than from a shared stream, so the item for a given index is identical regardless of worker
+    count, prefetch depth or shuffle order. ``batch_size`` is deliberately NOT set here — it is
+    frozen at ``RESC_ENC_BATCH`` and raising it would pass the efficiency check by running a
+    different experiment.
+
+    The real fix for the I/O is upstream of this: stage the 10 GB ``vol/`` onto the node's
+    local NVMe (``/scratch/local``, 15 TB on a thin node) and point ``--phase1-out`` there.
+    These settings then keep the GPU fed from it.
+    """
+    n = int(num_workers)
+    if n <= 0:                       # torch rejects both kwargs in the single-process path
+        return {"num_workers": 0}
+    return {"num_workers": n, "pin_memory": True, "persistent_workers": True,
+            "prefetch_factor": int(prefetch_factor)}
+
+
 # ----------------------------------------------------------------------------- data
 def load_record(args, split: str) -> pd.DataFrame:
     """The frozen Phase-3 candidate record for a split (Parquet, CSV fallback)."""

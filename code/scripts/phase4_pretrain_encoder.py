@@ -52,7 +52,8 @@ from abus_jcr.rescore.train import pretrain_encoder
 
 from _phase4_common import (add_phase4_paths, assert_device, build_features, cache_root,
                             crops_dir, dump_json, encoder_dir, gt_for_pool, iso_shape_map,
-                            label_codes, load_gt, load_record, rest_blocks, val_pool_for_seed)
+                            label_codes, loader_kwargs, load_gt, load_record, rest_blocks,
+                            val_pool_for_seed)
 
 
 def main() -> int:
@@ -113,8 +114,8 @@ def main() -> int:
                         source="volume", augment=True, seed=args.seed,
                         fixed_side=args.crop_side)
     loader = torch.utils.data.DataLoader(ds_tr.torch_dataset(), batch_size=args.batch,
-                                         shuffle=True, num_workers=args.num_workers,
-                                         drop_last=False)
+                                         shuffle=True, drop_last=False,
+                                         **loader_kwargs(args.num_workers))
 
     d_app = int(C.RESC_D_APP)
     d_in = d_app + Ztr.shape[1]

@@ -91,3 +91,41 @@ def test_phase4_argparse_actually_uses_the_resolved_default():
     assert args.phase1_out == f"{WORK}/outputs_iso/phase1"
     assert args.phase3_out == f"{WORK}/outputs_iso/phase3"
     assert args.out_root == f"{WORK}/outputs_iso/phase4"
+
+
+# ---- DataLoader throughput settings -------------------------------------------
+# Measured 2026-08-30 on job 17424998 (`jobgraph`): 1.99 % GPU utilisation, 13 min/epoch,
+# ~800 ms per item per worker against a ~10 ms trilinear resample. The loop is I/O bound on
+# per-item re-extraction from a memmapped volume on /proj (network storage), and the workers
+# — with their `_vol_cache` — were being destroyed and rebuilt every epoch.
+#
+# These knobs change only WHEN and WHERE an item is produced. `CropDataset` seeds augmentation
+# as `default_rng((seed, i))`, per item index rather than from a shared stream, so none of them
+# can move a number. `batch_size` is NOT among them and stays frozen at RESC_ENC_BATCH.
+
+def test_loader_kwargs_keep_workers_alive_across_epochs():
+    """The one that mattered: without it the volume cache is thrown away every epoch."""
+    mod = _reload("_phase4_common", WORK)
+    kw = mod.loader_kwargs(num_workers=8)
+    assert kw["num_workers"] == 8
+    assert kw["persistent_workers"] is True
+    assert kw["pin_memory"] is True
+    assert kw["prefetch_factor"] >= 2
+
+
+def test_loader_kwargs_degrade_safely_without_workers():
+    """torch rejects persistent_workers/prefetch_factor when num_workers == 0, so the
+    single-process path (laptops, debugging) must not pass them at all."""
+    mod = _reload("_phase4_common", WORK)
+    kw = mod.loader_kwargs(num_workers=0)
+    assert kw["num_workers"] == 0
+    assert "persistent_workers" not in kw
+    assert "prefetch_factor" not in kw
+
+
+def test_loader_kwargs_never_sets_batch_size():
+    """batch_size is a frozen convention (RESC_ENC_BATCH). Raising it would raise GPU power
+    and pass NSC's efficiency check by running a different experiment."""
+    mod = _reload("_phase4_common", WORK)
+    for n in (0, 4, 8):
+        assert "batch_size" not in mod.loader_kwargs(num_workers=n)
