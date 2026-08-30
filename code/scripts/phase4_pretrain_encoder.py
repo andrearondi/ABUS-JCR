@@ -48,7 +48,7 @@ from abus_jcr.probe.pool_diag import best_balacc
 from abus_jcr.rescore.evaluate import evaluate_variant
 from abus_jcr.rescore.objective import record_lesion_weights
 from abus_jcr.rescore.setmodel import B1Rescorer
-from abus_jcr.rescore.train import pretrain_encoder
+from abus_jcr.rescore.train import pretrain_encoder, write_epoch_table
 
 from _phase4_common import (add_phase4_paths, assert_device, build_features, cache_root,
                             crops_dir, dump_json, encoder_dir, gt_for_pool, iso_shape_map,
@@ -134,6 +134,19 @@ def main() -> int:
     print(f"# [4.2c] objective: gamma={C.RESC_FOCAL_GAMMA} alpha={args.alpha} "
           f"per_lesion_weights={C.RESC_PER_LESION_WEIGHTS}")
 
+    # Per-epoch probability columns, kept so the CI can be computed ONCE, after selection.
+    #
+    # Until 2026-08-31 every epoch ran a full `--n-boot` (default 200) bootstrap. Measured on
+    # job 17425385: ~2.9 s per draw => ~10 min per epoch, ~5 h per arm, with the GPU idle
+    # throughout (which is also what the NSC efficiency reaper was killing). And 29 of the 30
+    # intervals were discarded unread: `rescore.train.pretrain_encoder` selects with
+    # `select_epoch_by_val_cpm`, whose docstring calls `val_cpm` "the ONLY selection signal".
+    #
+    # `bootstrap_cpm_ci` is a pure function of (gt, pred, n_boot, seed) — pinned by
+    # tests/test_paired_bootstrap.py — so deferring it reproduces the selected epoch's interval
+    # exactly. Nothing reported moves; ~29/30 of the evaluation cost disappears.
+    probs_by_epoch: dict = {}
+
     def evaluate_epoch(epoch: int, enc, head) -> dict:
         enc.eval(); head.eval()
         with torch.no_grad():
@@ -146,8 +159,9 @@ def main() -> int:
             feats = torch.from_numpy(np.concatenate([emb, Zva], axis=1).astype(np.float32))
             logits = head(feats.to(args.device)[None]).squeeze(0)
             prob = torch.sigmoid(logits).clamp(0.0, 1.0 - C.RESC_PROB_EPS).cpu().numpy()
+        probs_by_epoch[int(epoch)] = prob
         res = evaluate_variant(rec_va, prob, gt_va, seed_tag=f"B1_seed{args.seed}",
-                               n_boot=args.n_boot)
+                               n_boot=0)
         # Per-candidate discrimination, alongside the ranking metric. If B1 fails to clear B0
         # this is what distinguishes "the pipeline is broken" (balacc far below the pool's
         # measured single-feature ceiling of 0.811, [F.9] §1) from "B0 is simply strong".
@@ -163,7 +177,21 @@ def main() -> int:
                               epochs=args.epochs, lr=args.lr, alpha=args.alpha,
                               device=args.device, row_weights=row_w)
 
-    best = result["epochs"][result["selected_epoch"]]
+    # The one CI that is actually reported: the selected epoch's, computed now that we know
+    # which epoch that is. Same pred, same seed, same n_boot as the old per-epoch call, so the
+    # interval is identical to what the discarded-29-of-30 version would have printed.
+    sel = int(result["selected_epoch"])
+    best = result["epochs"][sel]
+    if args.n_boot > 0:
+        print(f"# CI for the SELECTED epoch only ({args.n_boot} draws; the other "
+              f"{len(result['epochs']) - 1} epochs were selected on val_cpm, which needs none)",
+              flush=True)
+        ci_res = evaluate_variant(rec_va, probs_by_epoch[sel], gt_va,
+                                  seed_tag=f"B1_seed{args.seed}", n_boot=args.n_boot)
+        best["val_ci_lo"], best["val_ci_hi"] = ci_res["ci"]["lo"], ci_res["ci"]["hi"]
+        # `pretrain_encoder` already wrote the table with NaN bounds; rewrite it so the
+        # CSV and pretrain_report.json cannot disagree about the selected epoch.
+        write_epoch_table(result["epochs"], out_dir)
     print(f"\n# [4.3] seed {args.seed}: selected epoch {result['selected_epoch']} "
           f"(val CPM {best['val_cpm']:.4f}, CI [{best['val_ci_lo']:.4f}, {best['val_ci_hi']:.4f}], "
           f"ceiling {best['val_ceiling']:.4f})")

@@ -92,6 +92,15 @@ def bootstrap_cpm_ci(
     """
     _require_columns(gt_df, GT_COLUMNS, "gt_df")
     _require_columns(pred_df, PRED_COLUMNS, "pred_df")
+    if int(n_boot) < 1:
+        # Falling through would reach np.quantile on an empty array and raise
+        # `IndexError: index -1 is out of bounds` from inside numpy, forty frames from the
+        # caller. Producing an interval is this function's entire job, so zero draws is a
+        # caller bug; `rescore.evaluate.evaluate_variant` is the layer that legitimately
+        # means "no CI" and returns NaN bounds for n_boot <= 0.
+        raise ValueError(
+            f"bootstrap_cpm_ci needs n_boot >= 1, got {n_boot}. For a deliberately "
+            f"CI-free reading use evaluate_variant(..., n_boot=0), which returns NaN bounds.")
 
     pids = list(pd.unique(gt_df["public_id"]))
     point = cpm(evaluate_froc(gt_df, pred_df))

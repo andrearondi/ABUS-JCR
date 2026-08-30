@@ -136,3 +136,73 @@ def test_the_interval_brackets_the_bootstrap_distribution():
     boot = np.asarray(out["boot"])
     assert out["lo"] >= boot.min() - 1e-12 and out["hi"] <= boot.max() + 1e-12
     assert out["lo"] <= out["hi"]
+
+
+# --------------------------------------------------------------------------- deferred CI
+# `phase4_pretrain_encoder` used to run a 200-draw CI on EVERY epoch. Measured 2026-08-31 on
+# job 17425385: ~2.9 s per draw, so ~10 min per epoch, 5 h per arm — and `pretrain_encoder`
+# selects with `select_epoch_by_val_cpm`, which reads `val_cpm` and NEVER the interval. 29 of
+# 30 intervals were computed and discarded, and the GPU idled through all of it.
+#
+# The fix defers the CI to the selected epoch. It is only result-invariant if the interval is
+# a pure function of (gt, pred, n_boot, seed) — i.e. computing it later gives byte-identical
+# bounds. That is what these pin.
+
+def test_marginal_ci_is_a_pure_function_of_its_inputs():
+    """Deferring the CI to after the loop must not change it."""
+    from abus_jcr.eval.froc import bootstrap_cpm_ci
+    gt, pred = _gt(), _pred(0.9, 0.2)
+    now = bootstrap_cpm_ci(gt, pred, n_boot=8, seed=0)
+    later = bootstrap_cpm_ci(gt, pred, n_boot=8, seed=0)
+    assert (now["lo"], now["hi"], now["point"]) == (later["lo"], later["hi"], later["point"])
+
+
+def test_marginal_ci_does_not_depend_on_how_many_were_computed_before_it():
+    """Interleaving other bootstraps must not perturb it — no shared RNG stream."""
+    from abus_jcr.eval.froc import bootstrap_cpm_ci
+    gt = _gt()
+    target = _pred(0.9, 0.2)
+    first = bootstrap_cpm_ci(gt, target, n_boot=8, seed=0)
+    for p in (_pred(0.8, 0.3), _pred(0.7, 0.4)):        # the discarded per-epoch CIs
+        bootstrap_cpm_ci(gt, p, n_boot=8, seed=0)
+    after = bootstrap_cpm_ci(gt, target, n_boot=8, seed=0)
+    assert (first["lo"], first["hi"]) == (after["lo"], after["hi"])
+
+
+def _record_from(pred: pd.DataFrame) -> pd.DataFrame:
+    """Widen a PRED frame to a full candidate record — ``evaluate_variant`` validates the
+    whole schema before writing the official CSV."""
+    from abus_jcr.candidates.record import CANDIDATE_COLUMNS
+    n = len(pred)
+    rec = pred.rename(columns={"probability": "score_max"}).copy()
+    defaults = {"candidate_id": [f"s0:{i}" for i in range(n)], "detector_of_origin": "s0",
+                "split": "val", "fold": -1, "score_mean": 0.1, "score_std": 0.05,
+                "score_min": 0.05, "slice_count": 20.0, "z_span": 25.0, "fill_ratio": 0.8,
+                "centroid_jitter": 0.05, "area_cv": 0.4, "rank": 1, "rank_norm": 0.5,
+                "label": "neg", "iou_gt": 0.4, "cen_d0": 50.0, "cen_d1": 50.0, "cen_d2": 50.0,
+                "ext_d0": 20.0, "ext_d1": 20.0, "ext_d2": 20.0, "preprocess_hash": "abc"}
+    for c, v in defaults.items():
+        rec[c] = v
+    return rec[CANDIDATE_COLUMNS]
+
+
+def test_evaluate_variant_with_zero_draws_keeps_the_point_estimate():
+    """What the training loop now runs on every epoch. ``evaluate_variant`` is the layer that
+    documents ``n_boot <= 0`` as "no CI", and the point estimate — the ONLY selection signal —
+    must survive it; only the bounds go away."""
+    from abus_jcr.rescore.evaluate import evaluate_variant
+    gt, pred = _gt(), _pred(0.9, 0.2)
+    rec = _record_from(pred)
+    res = evaluate_variant(rec, rec["score_max"].to_numpy(float), gt, "t", n_boot=0)
+    assert res["cpm"] == pytest.approx(cpm(evaluate_froc(gt, pred)))
+    assert np.isnan(res["ci"]["lo"]) and np.isnan(res["ci"]["hi"])
+
+
+def test_bootstrap_cpm_ci_refuses_zero_draws_by_name():
+    """The primitive's whole job is to produce an interval, so zero draws is a caller bug.
+    It used to fall through to ``np.quantile`` on an empty array and die with
+    ``IndexError: index -1 is out of bounds`` from inside numpy — forty frames from the
+    mistake. ``evaluate_variant`` remains the layer that legitimately means "no CI"."""
+    from abus_jcr.eval.froc import bootstrap_cpm_ci
+    with pytest.raises(ValueError, match="n_boot"):
+        bootstrap_cpm_ci(_gt(), _pred(0.9, 0.2), n_boot=0, seed=0)
