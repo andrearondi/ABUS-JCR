@@ -27,7 +27,7 @@ from abus_jcr.rescore.crops import open_crop_cache
 from abus_jcr.rescore.encoder import build_encoder
 
 from _phase4_common import (add_phase4_paths, assert_device, crops_dir, dump_json,
-                            emb_path, embeddings_dir, encoder_dir, load_record)
+                            emb_path, emb_report_path, encoder_dir, load_record)
 
 
 def main() -> int:
@@ -80,11 +80,14 @@ def main() -> int:
         print(f"# wrote {path} {out.shape} (mean|a| {written[split]['mean_abs']:.4f}, "
               f"zero frac {written[split]['frac_zero']:.3f})")
 
+    # The report shares `emb_path`'s suffix (see `emb_report_path`): two checkpoints of one seed
+    # must leave two records, or the canonical arrays end up documented as the alternate epoch's.
     dump_json({"seed": args.seed, "encoder_ckpt": str(ckpt_path),
                "encoder_epoch": int(ckpt["epoch"]), "crop_hash": meta["crop_hash"],
                "preprocess_hash": meta["preprocess_hash"], "augmented": False,
+               "emb_suffix": getattr(args, "emb_suffix", "") or "",
                "splits": written},
-              embeddings_dir(args) / f"embeddings_seed{args.seed}.json")
+              emb_report_path(args, args.seed))
     return 0
 
 

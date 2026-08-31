@@ -138,6 +138,23 @@ def emb_path(args, split: str, seed: int, suffix: Optional[str] = None) -> Path:
     return embeddings_dir(args) / f"emb_{split}_seed{int(seed)}{sfx or ''}.npy"
 
 
+def emb_report_path(args, seed: int, suffix: Optional[str] = None) -> Path:
+    """``embeddings/embeddings_seed{R}{suffix}.json`` — the provenance record for ``emb_path``.
+
+    **It must carry the same suffix as the arrays it describes**, which is why it resolves the
+    suffix here rather than at the call site: the two filenames are one decision, and splitting
+    it across two files is what let them drift.
+
+    Until 2026-08-31 this name was suffix-free while ``emb_path`` was not, so `[4.2d.2]`'s second
+    checkpoint overwrote the first's record: the canonical ``emb_*_seed0.npy`` (epoch 2) were left
+    documented as ``encoder_epoch = 12``. The arrays themselves were never wrong and nothing in the
+    repo reads this file, so no measurement moved — but a provenance record naming the wrong
+    checkpoint is precisely the silent misattribution the project's gates exist to prevent.
+    """
+    sfx = getattr(args, "emb_suffix", "") if suffix is None else suffix
+    return embeddings_dir(args) / f"embeddings_seed{int(seed)}{sfx or ''}.json"
+
+
 def variant_dir(args, variant: str, seed: int, trial: int) -> Path:
     return Path(args.out_root) / "variants" / f"{variant}_seed{int(seed)}_trial{int(trial)}"
 

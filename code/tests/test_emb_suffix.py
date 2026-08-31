@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from _phase4_common import add_phase4_paths, emb_path  # noqa: E402
+from _phase4_common import add_phase4_paths, emb_path, emb_report_path  # noqa: E402
 
 
 def _args(argv):
@@ -45,3 +45,37 @@ def test_an_explicit_argument_still_overrides_the_parsed_one():
     """`load_variant_inputs` passes no suffix; a caller may pass one directly."""
     a = _args(["--out-root", "/p4", "--emb-suffix", "_ep14"])
     assert emb_path(a, "val", 0, suffix="") == Path("/p4/embeddings/emb_val_seed0.npy")
+
+
+# --------------------------------------------------------------------------- the JSON record
+# Added 2026-08-31. The arrays carried the suffix and the report did not, so `[4.2d.2]`'s second
+# checkpoint (epoch 12) overwrote the first's record and left the CANONICAL epoch-2 embeddings
+# documented as `encoder_epoch = 12`. Nothing reads the file, so no measurement moved — but the
+# whole point of a provenance record is that it names the right checkpoint.
+
+
+def test_report_default_path_sits_beside_the_default_arrays():
+    a = _args(["--out-root", "/p4"])
+    assert emb_report_path(a, 0) == Path("/p4/embeddings/embeddings_seed0.json")
+
+
+def test_report_carries_the_same_suffix_as_the_arrays_it_describes():
+    a = _args(["--out-root", "/p4", "--emb-suffix", "_ep12"])
+    assert emb_report_path(a, 0) == Path("/p4/embeddings/embeddings_seed0_ep12.json")
+
+
+def test_two_checkpoints_of_one_seed_leave_two_reports():
+    """THE regression. Both must exist, or the canonical arrays lose their provenance."""
+    base = _args(["--out-root", "/p4"])
+    alt = _args(["--out-root", "/p4", "--emb-suffix", "_ep12"])
+    assert emb_report_path(base, 0) != emb_report_path(alt, 0)
+
+
+def test_report_and_arrays_agree_on_the_suffix_for_every_case():
+    """The two names are one decision; this is what stops them drifting apart again."""
+    for sfx in ("", "_ep12", "_ep14"):
+        a = _args(["--out-root", "/p4", "--emb-suffix", sfx])
+        arr, rep = emb_path(a, "train", 0), emb_report_path(a, 0)
+        assert arr.parent == rep.parent
+        assert arr.stem.endswith(sfx) and rep.stem.endswith(sfx) if sfx else True
+        assert rep.name == f"embeddings_seed0{sfx}.json"
