@@ -247,7 +247,9 @@ def test_phase4_constants_match_the_spec():
     assert C.RESC_MAX_SET_SIZE == 576 and C.RESC_NEG_POS_RATIO is None
     assert C.RESC_MAX_SET_SIZE > 509, "the promoted train pool contains a 509-candidate set"
     assert C.RESC_SEEDS == (0, 1, 2) and C.RESC_SET_EPOCHS == 60 and C.RESC_ENC_EPOCHS == 30
-    assert C.RESC_TOKEN_BLOCKS == ("appearance", "abs_geom", "score_stats", "tube_geom", "rank")
+    # BRANCH B (2026-09-01, [4.2d.3]): "appearance" dropped — 7/8 cells below token-only,
+    # paired bootstrap significantly worse than B0 on the balacc-argmax arm.
+    assert C.RESC_TOKEN_BLOCKS == ("abs_geom", "score_stats", "tube_geom", "rank")
     assert len(C.RESC_CE_SEARCH) == 4 and len(C.RESC_LAMBDA_SEARCH) == 4
     assert len(C.RESC_SET_CAPACITY_GRID) == 2
 

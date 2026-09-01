@@ -145,7 +145,11 @@ def build_feature_matrix(record_df: pd.DataFrame, emb: Optional[np.ndarray] = No
 
     parts: List[np.ndarray] = []
     names: List[str] = []
-    for block in C.RESC_TOKEN_BLOCKS:                       # canonical order, always
+    # Canonical order = BLOCK_DIMS declaration order — NOT the deployed default. Iterating over
+    # C.RESC_TOKEN_BLOCKS here silently ignored any requested block outside the default, which
+    # was invisible while the default contained every block; BRANCH B (2026-09-01) shrank the
+    # default and an explicit appearance build would have silently come out token-only.
+    for block in BLOCK_DIMS:                                # canonical order, always
         if block not in use_blocks:
             continue
         if block == "appearance":

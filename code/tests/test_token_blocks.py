@@ -52,11 +52,26 @@ def _emb(n, d=None):
 
 
 # --------------------------------------------------------------------------- block dims
+#: Every KNOWN block, appearance included. BRANCH B (2026-09-01, [4.2d.3]) removed appearance
+#: from the DEFAULT set (C.RESC_TOKEN_BLOCKS) but it stays a requestable block — the [4.2d.3]
+#: study and any re-audit build it explicitly — so the tests below exercise both.
+ALL_BLOCKS = tuple(BLOCK_DIMS)
+
+
 def test_all_blocks_together_give_the_declared_width():
     rec = _record()
-    X, names = build_feature_matrix(rec, emb=_emb(len(rec)), iso_shape_by_pid=ISO_SHAPE)
+    X, names = build_feature_matrix(rec, emb=_emb(len(rec)), use_blocks=ALL_BLOCKS,
+                                    iso_shape_by_pid=ISO_SHAPE)
     assert X.shape == (len(rec), sum(BLOCK_DIMS.values()))
     assert len(names) == X.shape[1]
+
+
+def test_default_blocks_give_the_branch_b_width():
+    """The deployed default (no appearance) is 6 + 7 + 2 + 17 = 32."""
+    rec = _record()
+    X, names = build_feature_matrix(rec, emb=None, iso_shape_by_pid=ISO_SHAPE)
+    assert X.shape == (len(rec), sum(BLOCK_DIMS[b] for b in C.RESC_TOKEN_BLOCKS)) == (len(rec), 32)
+    assert not any(n.startswith("app") for n in names)
 
 
 def test_declared_block_dims_match_the_spec_table():
@@ -70,8 +85,8 @@ def test_declared_block_dims_match_the_spec_table():
 def test_disabling_a_block_removes_exactly_its_dims(dropped):
     rec = _record()
     emb = _emb(len(rec))
-    keep = tuple(b for b in C.RESC_TOKEN_BLOCKS if b != dropped)
-    X_full, _ = build_feature_matrix(rec, emb=emb, iso_shape_by_pid=ISO_SHAPE)
+    keep = tuple(b for b in ALL_BLOCKS if b != dropped)
+    X_full, _ = build_feature_matrix(rec, emb=emb, use_blocks=ALL_BLOCKS, iso_shape_by_pid=ISO_SHAPE)
     X_drop, _ = build_feature_matrix(rec, emb=emb, use_blocks=keep, iso_shape_by_pid=ISO_SHAPE)
     assert X_drop.shape[1] == X_full.shape[1] - BLOCK_DIMS[dropped]
 
@@ -98,8 +113,11 @@ def test_appearance_block_may_be_omitted_without_an_embedding():
 
 
 def test_appearance_block_without_an_embedding_is_an_error():
+    """Requesting appearance explicitly with no embedding must still raise (the default no
+    longer includes it, so the default + emb=None is legal — pinned above)."""
     with pytest.raises(ValueError, match="appearance"):
-        build_feature_matrix(_record(), emb=None, iso_shape_by_pid=ISO_SHAPE)
+        build_feature_matrix(_record(), emb=None, use_blocks=ALL_BLOCKS,
+                             iso_shape_by_pid=ISO_SHAPE)
 
 
 # --------------------------------------------------------------------------- de-duplication

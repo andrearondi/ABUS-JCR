@@ -469,7 +469,13 @@ RESC_ENCODER_FALLBACK = "small_cnn_3d"
 RESC_SMALL_CNN_WIDTHS = (16, 32, 64, 128)
 # --- 4 (C): the per-candidate token (§1.2) ----------------------------------
 RESC_RANK_PE_DIM     = 16    # sinusoidal embedding width of the integer `rank`
-RESC_TOKEN_BLOCKS    = ("appearance", "abs_geom", "score_stats", "tube_geom", "rank")
+# BRANCH B, decided by the user 2026-09-01 at the pre-registered [4.2d.3] STOP: "appearance"
+# REMOVED. Measured on iso seed 0: 7/8 appearance cells below their token-only twins (deployed
+# 0.5000/0.4088 vs 0.6451), the balacc-argmax arm significantly WORSE than B0 (paired
+# -0.1465 [-0.2868, -0.0029]), balacc down too. This drops the token from the model's input;
+# it does not claim appearance is uninformative — the end-to-end encoder ([4.2], 0.7276 > B0')
+# says otherwise. Full record: RESULTS_PHASE_4_ISO.md [4.2d.3].
+RESC_TOKEN_BLOCKS    = ("abs_geom", "score_stats", "tube_geom", "rank")
 # --- 4 (D): the set module (§1.3) -------------------------------------------
 RESC_SET_CAPACITY_GRID = (("L2H128h4", 2, 128, 4), ("L2H256h8", 2, 256, 8))  # selected ONCE on B2
 RESC_SET_DROPOUT     = 0.1
