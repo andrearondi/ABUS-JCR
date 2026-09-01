@@ -416,11 +416,24 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
     va_coord, va_length = boxes_of(inputs["rec_va"])
     Zva32 = np.ascontiguousarray(inputs["Zva"], dtype=np.float32)
 
+    # Per-epoch probability columns, kept so the CI can be computed ONCE, after selection.
+    #
+    # Until 2026-09-01 every epoch ran the full `n_boot` (default 200) bootstrap here — the
+    # SAME defect fixed in `phase4_pretrain_encoder` on 2026-08-31, alive in this shared path:
+    # `select_epoch_by_val_cpm` reads `val_cpm` only, so 59 of 60 intervals were computed and
+    # discarded at ~10 min each. Measured on job 17442233 ([4.5], B2 on this pool): epoch 12
+    # after ~3 h = ~13 min/epoch, the identical signature to job 17425385. Uncorrected, [4.5]
+    # was ~26 h and the 27-run [4.6] ladder was infeasible outright. `bootstrap_cpm_ci` is a
+    # pure function of (gt, pred, n_boot, seed) — pinned by tests/test_paired_bootstrap.py —
+    # so deferring it reproduces the selected epoch's interval exactly.
+    probs_by_epoch: Dict[int, np.ndarray] = {}
+
     def evaluate_epoch(epoch: int, model) -> Dict:
         prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
                           n_rows=len(inputs["rec_va"]), device=device)
+        probs_by_epoch[int(epoch)] = prob
         res = evaluate_variant(inputs["rec_va"], prob, inputs["gt_va"],
-                               seed_tag=f"{variant}_seed{seed}", n_boot=n_boot)
+                               seed_tag=f"{variant}_seed{seed}", n_boot=0)
         model.train()
         return {"val_cpm": res["cpm"], "val_ceiling": res["ceiling"],
                 "val_ci_lo": res["ci"]["lo"], "val_ci_hi": res["ci"]["hi"]}
@@ -432,6 +445,21 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
                                 w_rank=trial["w_rank"], lam=trial["lam"], alpha=trial["alpha"],
                                 lr=trial["lr"], epochs=epochs, device=device,
                                 row_weights=row_w)
+    # The one CI actually reported: the selected epoch's, computed now that we know which epoch
+    # that is. Same pred, same seed, same n_boot as the old per-epoch call, so the interval is
+    # identical to what the discarded-59-of-60 version printed for that epoch. The epoch table
+    # is rewritten so the CSV and the payload cannot disagree about the selected row.
+    sel = int(payload["selected_epoch"])
+    if n_boot > 0:
+        from abus_jcr.rescore.train import write_epoch_table
+        print(f"# CI for the SELECTED epoch only ({n_boot} draws; the other "
+              f"{len(payload['epochs']) - 1} epochs were selected on val_cpm, which needs none)",
+              flush=True)
+        ci_res = evaluate_variant(inputs["rec_va"], probs_by_epoch[sel], inputs["gt_va"],
+                                  seed_tag=f"{variant}_seed{seed}", n_boot=n_boot)
+        row = payload["epochs"][sel]
+        row["val_ci_lo"], row["val_ci_hi"] = ci_res["ci"]["lo"], ci_res["ci"]["hi"]
+        write_epoch_table(payload["epochs"], out_dir)
     payload.pop("model", None)          # a torch module; the checkpoint on disk is the artefact
     payload.update({"variant": variant, "seed": int(seed), "capacity": list(capacity),
                     "params": n_params, "b1_hidden": hidden, "d_in": d_in,
