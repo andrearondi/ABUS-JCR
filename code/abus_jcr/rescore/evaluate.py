@@ -168,13 +168,18 @@ def seed_summary(per_seed: Sequence[Dict]) -> Dict:
 
 def score_pool(model, feats: np.ndarray, coord: np.ndarray, length: np.ndarray,
                index_lists: Sequence[np.ndarray], n_rows: int, device: str = "cpu",
-               max_set_size: Optional[int] = None, batch_sets: Optional[int] = None
-               ) -> np.ndarray:
+               max_set_size: Optional[int] = None, batch_sets: Optional[int] = None,
+               raw_logits: bool = False) -> np.ndarray:
     """Run the rescorer over every SET and return a ``probability`` per RECORD ROW.
 
     Sets are scored independently (attention never crosses sets); the per-set outputs are
     scattered back to record row order, so the result joins the record — and hence the pred
     CSV — by construction. Un-augmented, no TTA (Inv. 13).
+
+    ``raw_logits=True`` returns the un-sigmoided logits instead (added 2026-09-02 for the
+    pooled rungs' reference table, which must share the batch logits' scale — a sigmoid here
+    would put the reference population on a different axis than the live candidates the
+    surrogate compares it against). Every probability consumer keeps the default.
     """
     import torch
 
@@ -195,7 +200,10 @@ def score_pool(model, feats: np.ndarray, coord: np.ndarray, length: np.ndarray,
             t = {k: torch.as_tensor(v).to(device) for k, v in batch.items()
                  if k in ("feats", "coord", "length", "mask")}
             logits = model(t["feats"].float(), t["coord"].float(), t["length"].float(), t["mask"])
-            p = torch.sigmoid(logits).clamp(0.0, 1.0 - C.RESC_PROB_EPS).cpu().numpy()
+            if raw_logits:
+                p = logits.cpu().numpy()
+            else:
+                p = torch.sigmoid(logits).clamp(0.0, 1.0 - C.RESC_PROB_EPS).cpu().numpy()
             for i, idx in enumerate(chunk):
                 out[idx] = p[i, :len(idx)]
 

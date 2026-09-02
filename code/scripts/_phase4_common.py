@@ -349,15 +349,22 @@ def load_variant_inputs(args, seed: int, use_blocks: Sequence[str]):
     rec_va_all = load_record(args, "val")
     rec_va = val_pool_for_seed(rec_va_all, seed)
 
-    emb_tr = np.load(emb_path(args, "train", seed))
-    emb_va_all = np.load(emb_path(args, "val", seed))
-    va_rows = rec_va_all.index[rec_va_all["detector_of_origin"] == seed_detector(seed)].to_numpy()
-    emb_va = emb_va_all[va_rows]
+    # Embeddings are loaded ONLY when the appearance block is enabled. Until 2026-09-02 the
+    # loads ran unconditionally and only the USE was gated — invisible while every seed had
+    # cached embeddings, but BRANCH B trains no encoder for seeds 1/2, so sessions A and B
+    # both crashed at seed 1 on a file Branch B says must not exist. Seed-0 results were
+    # unaffected (the gate below already passed None into the features).
+    emb_tr = emb_va = None
+    if "appearance" in use_blocks:
+        emb_tr = np.load(emb_path(args, "train", seed))
+        emb_va_all = np.load(emb_path(args, "val", seed))
+        va_rows = rec_va_all.index[rec_va_all["detector_of_origin"]
+                                   == seed_detector(seed)].to_numpy()
+        emb_va = emb_va_all[va_rows]
 
-    use_emb = "appearance" in use_blocks
-    Ztr, names, stats = build_features(rec_tr, emb_tr if use_emb else None, use_blocks,
+    Ztr, names, stats = build_features(rec_tr, emb_tr, use_blocks,
                                        iso_shape_map(args, rec_tr), stats=None)
-    Zva, _, _ = build_features(rec_va, emb_va if use_emb else None, use_blocks,
+    Zva, _, _ = build_features(rec_va, emb_va, use_blocks,
                                iso_shape_map(args, rec_va), stats=stats)
     gt_va = gt_for_pool(load_gt(args, "val"), rec_va)
     gt_tr = gt_for_pool(load_gt(args, "train"), rec_tr)
@@ -385,13 +392,22 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
     Shared by [4.5] capacity selection, [4.6] the grid, and [4.8] the sub-ablations, so the
     schedule, the selection rule and the fairness accounting cannot drift between them.
     """
+    from abus_jcr.rescore.variants import VARIANTS, match_b1_capacity
+
+    # THE REFUSE-GUARD (RB §12 Step 3), before anything heavy is imported or loaded: a '-P'
+    # rung whose effective rank loss is not the pooled surrogate would silently train
+    # smooth-AP and come out an expensive duplicate of its twin.
+    rank_loss = VARIANTS[variant].get("rank_loss")
+    if variant.endswith("-P") and rank_loss != "froc":
+        raise SystemExit(f"{variant} is a pooled rung but its effective rank_loss is "
+                         f"{rank_loss!r}, not 'froc' — refusing to train a duplicate of its twin")
+
     import torch
 
     from abus_jcr.rescore.evaluate import evaluate_variant, score_pool
     from abus_jcr.rescore.objective import record_lesion_weights
     from abus_jcr.rescore.setmodel import build_rescorer
     from abus_jcr.rescore.train import train_set_variant
-    from abus_jcr.rescore.variants import VARIANTS, match_b1_capacity
 
     inputs = inputs or load_variant_inputs(args, seed, use_blocks)
     d_in = inputs["d_in"]
@@ -438,13 +454,45 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
         return {"val_cpm": res["cpm"], "val_ceiling": res["ceiling"],
                 "val_ci_lo": res["ci"]["lo"], "val_ci_hi": res["ci"]["hi"]}
 
+    # The pooled-surrogate wiring (2026-09-02; user-approved decisions of the same date):
+    # reference table = the WHOLE train pool scored detached each epoch (per-batch complement
+    # inside the trainer), n_vol exact from the pool, warm start = the CE twin's DEPLOYED
+    # checkpoint of the SAME seed for all 4 lambda trials, beta annealed by train.froc_beta.
+    froc_kw: Dict = {}
+    if rank_loss == "froc":
+        n_vol = int(inputs["rec_tr"]["public_id"].nunique())
+        n_pool = len(inputs["rec_tr"])
+        tr_sets = set_index_lists(inputs["rec_tr"])
+        tr_coord, tr_length = boxes_of(inputs["rec_tr"])
+        Ztr32 = np.ascontiguousarray(inputs["Ztr"], dtype=np.float32)
+        tr_codes = label_codes(inputs["rec_tr"]).astype(np.float32)
+
+        def ref_provider(epoch: int, model):
+            lg = score_pool(model, Ztr32, tr_coord, tr_length, tr_sets,
+                            n_rows=n_pool, device=device, raw_logits=True)
+            return lg.astype(np.float32), tr_codes
+
+        twin = variant[:-2]
+        twin_rep = load_deployed_report(args, twin, seed)
+        ckpt_path = twin_rep["deployed"]["selected_ckpt"]
+        init_state = torch.load(ckpt_path, map_location="cpu")["model"]
+        # The two lines the results template requires on every -P run:
+        print(f"# {variant}: POOLED FROC surrogate — n_vol = {n_vol}, reference table "
+              f"{n_pool} rows (whole train pool, per-batch complement)")
+        print(f"# {variant}: warm start from {twin} seed{seed} deployed ckpt (epoch "
+              f"{twin_rep['deployed']['selected_epoch']}) {ckpt_path}; "
+              f"beta {C.RESC_FROC_BETA0} -> {C.RESC_FROC_BETA} over the first "
+              f"{int(C.RESC_FROC_BETA_ANNEAL_FRAC * 100)}% of the budget")
+        froc_kw = dict(rank_loss="froc", n_vol=float(n_vol), ref_provider=ref_provider,
+                       init_state=init_state)
+
     # the promoted [4.2c] objective: gamma and the per-lesion weights come from `conventions`,
     # so every rung of the ladder trains under the objective that is RECORDED as deployed
     row_w = (record_lesion_weights(inputs["rec_tr"]) if C.RESC_PER_LESION_WEIGHTS else None)
     payload = train_set_variant(model_factory, batches, evaluate_epoch, out_dir, seed=seed,
                                 w_rank=trial["w_rank"], lam=trial["lam"], alpha=trial["alpha"],
                                 lr=trial["lr"], epochs=epochs, device=device,
-                                row_weights=row_w)
+                                row_weights=row_w, **froc_kw)
     # The one CI actually reported: the selected epoch's, computed now that we know which epoch
     # that is. Same pred, same seed, same n_boot as the old per-epoch call, so the interval is
     # identical to what the discarded-59-of-60 version printed for that epoch. The epoch table
@@ -465,6 +513,11 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
                     "params": n_params, "b1_hidden": hidden, "d_in": d_in,
                     "use_blocks": list(use_blocks),
                     "geom_mechanism": geom_mechanism or C.RESC_GEOM_MECHANISM})
+    if rank_loss == "froc":             # provenance for the -P rungs, auditable in the JSON
+        payload.update({"rank_loss": "froc", "n_vol": n_vol, "ref_table_rows": n_pool,
+                        "warm_start_ckpt": str(ckpt_path),
+                        "beta_anneal": [C.RESC_FROC_BETA0, C.RESC_FROC_BETA,
+                                        C.RESC_FROC_BETA_ANNEAL_FRAC]})
     return payload
 
 

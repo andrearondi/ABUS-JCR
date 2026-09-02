@@ -516,6 +516,12 @@ RESC_SMOOTH_AP_TAU   = 0.01         # sigmoid temperature of the rank indicator
 RESC_FROC_TAU        = 0.10         # logit scale: "is this false positive above the lesion?"
 RESC_FROC_BETA       = 0.25         # FP-per-volume scale: "is this lesion under the budget?"
 RESC_FROC_MAX_TAU    = 0.10         # logit scale: soft max over a lesion's hitting candidates
+# β anneal for the pooled rungs (decided with the user 2026-09-02, before any -P rung trained):
+# a bounded surrogate has no gradient at initialisation when every lesion sits far from every
+# budget, so β starts wide and tightens linearly to RESC_FROC_BETA over the first
+# RESC_FROC_BETA_ANNEAL_FRAC of the epoch budget, then holds (rescore/train.froc_beta).
+RESC_FROC_BETA0      = 1.0          # anneal start, FP-per-volume scale
+RESC_FROC_BETA_ANNEAL_FRAC = 0.5    # fraction of the budget spent annealing
 # PROMOTED 2026-08-15 by `[4.2c]` (3 seeds, pre-specified 2x2): 2.0 -> 0.0. Focal loss is
 # deliberately NOT a proper scoring rule; plain weighted BCE is, and `[F.8]` puts 78.7 % of the
 # headroom in cross-volume CALIBRATION — the quantity a proper scoring rule preserves and focal

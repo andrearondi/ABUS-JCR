@@ -39,7 +39,38 @@ from .losses import rescorer_loss
 from .variants import select_epoch_by_val_cpm
 
 __all__ = ["cosine_lr", "make_optimizer", "pretrain_encoder", "train_set_variant",
-           "write_epoch_table", "select_epoch_by_val_cpm", "resolve_model"]
+           "write_epoch_table", "select_epoch_by_val_cpm", "resolve_model",
+           "froc_beta", "ref_complement"]
+
+
+def froc_beta(epoch: int, epochs: int) -> float:
+    """The pooled-surrogate β for this epoch: ``RESC_FROC_BETA0 → RESC_FROC_BETA``, linear
+    over the first ``RESC_FROC_BETA_ANNEAL_FRAC`` of the budget, constant after.
+
+    Exists because a bounded surrogate has no gradient at initialisation when every lesion
+    sits far from every budget (RB_PHASE_4_ISO §12 Step 3). Schedule decided with the user
+    2026-09-02, before any ``-P`` rung trained. Pure and torch-free so the schedule is
+    pinned by ``tests/test_froc_wiring.py`` on any machine.
+    """
+    anneal = max(1.0, float(epochs) * float(C.RESC_FROC_BETA_ANNEAL_FRAC))
+    t = min(1.0, max(0.0, float(epoch)) / anneal)
+    return float(C.RESC_FROC_BETA + (C.RESC_FROC_BETA0 - C.RESC_FROC_BETA) * (1.0 - t))
+
+
+def ref_complement(rows, n_pool: int):
+    """Boolean keep-mask over the pool: True for rows NOT in this batch.
+
+    The reference table is scored once per epoch over the WHOLE pool; a batch's own rows
+    must be excluded before it is passed to the loss, or every batch candidate is counted
+    twice (once live, once as its stale detached copy). ``rows`` is ``collate_sets``' map,
+    ``-1`` on padding — padding excludes nothing.
+    """
+    import numpy as np
+
+    keep = np.ones(int(n_pool), dtype=bool)
+    rr = np.asarray(rows).reshape(-1)
+    keep[rr[rr >= 0]] = False
+    return keep
 
 
 def resolve_model(model_or_factory, seed: int, seed_fn=None):
@@ -182,7 +213,9 @@ def train_set_variant(model_factory, batches: Callable[[int], object],
                       lr: Optional[float] = None, epochs: Optional[int] = None,
                       opt_cfg: Optional[Dict] = None, device: str = "cuda",
                       gamma: Optional[float] = None, soft_targets: bool = False,
-                      row_weights=None) -> Dict:
+                      row_weights=None, rank_loss: Optional[str] = None,
+                      n_vol: Optional[float] = None, ref_provider=None,
+                      init_state=None) -> Dict:
     """[4.6] Train ONE ``(variant, seed, trial)`` over the cached embeddings.
 
     ``model_factory`` is a zero-argument callable; it is invoked **after** seeding
@@ -197,12 +230,32 @@ def train_set_variant(model_factory, batches: Callable[[int], object],
     and are inert at their defaults. ``row_weights`` is indexed **per record row** and is
     gathered onto each padded batch through ``collate_sets``' ``rows`` map, so it needs no
     change to the batch schema and padding can never pick up a weight.
+
+    **The pooled rungs (`B1-P`/`A2-P`/`FULL-P`, wired 2026-09-02).** Four opt-in pieces, all
+    inert at their defaults so the six pre-registered rungs train bit-identically:
+
+    ``rank_loss="froc"``
+        routes the ranking term to :func:`losses.froc_surrogate_loss`; β follows
+        :func:`froc_beta`'s anneal.
+    ``ref_provider(epoch, model) -> (logits, label_codes)``
+        the reference table — the WHOLE train pool scored detached once per epoch; each
+        batch receives the :func:`ref_complement` of its own rows, so no candidate is
+        counted both live and stale. The provider may flip ``model.eval()``; the loop
+        restores ``train()``.
+    ``n_vol``
+        total train volumes (100), so the cost-per-volume rate is exact, not per-batch.
+    ``init_state``
+        the CE twin's deployed ``state_dict`` — loaded **after** :func:`resolve_model`
+        seeds, so RNG state stays deterministic while the weights warm-start.
     """
+    import numpy as np
     import torch
 
     from .datasets import batch_row_weights
 
     model = resolve_model(model_factory, seed)
+    if init_state is not None:
+        model.load_state_dict(init_state)
     epochs = int(C.RESC_SET_EPOCHS if epochs is None else epochs)
     opt_cfg = dict(C.RESC_SET_OPT if opt_cfg is None else opt_cfg)
     base_lr = float(opt_cfg["lr"] if lr is None else lr)
@@ -216,7 +269,11 @@ def train_set_variant(model_factory, batches: Callable[[int], object],
     for ep in range(epochs):
         for g in opt.param_groups:
             g["lr"] = cosine_lr(base_lr, ep, epochs)
-        model.train()
+        ref_logits_pool = ref_labels_pool = None
+        if ref_provider is not None:
+            ref_logits_pool, ref_labels_pool = ref_provider(ep, model)
+        beta_ep = froc_beta(ep, epochs) if rank_loss == "froc" else None
+        model.train()                       # the ref provider scores under eval(); restore
         tot, rank_tot, bce_tot, nb = 0.0, 0.0, 0.0, 0
         for batch in batches(ep):
             t = {k: torch.as_tensor(v).to(device) for k, v in batch.items()
@@ -225,9 +282,21 @@ def train_set_variant(model_factory, batches: Callable[[int], object],
             bw = batch_row_weights(batch["rows"], row_weights)
             if bw is not None:
                 bw = torch.as_tensor(bw).to(logits.device)
+            extra: Dict = {}
+            if rank_loss is not None:
+                extra = {"rank_loss": rank_loss, "n_vol": n_vol, "beta": beta_ep}
+                if ref_logits_pool is not None:
+                    keep = ref_complement(batch["rows"], len(ref_logits_pool))
+                    extra["ref_logits"] = torch.as_tensor(
+                        np.ascontiguousarray(ref_logits_pool[keep]),
+                        dtype=logits.dtype, device=logits.device)
+                    extra["ref_labels"] = torch.as_tensor(
+                        np.ascontiguousarray(ref_labels_pool[keep]),
+                        dtype=logits.dtype, device=logits.device)
             loss, parts = rescorer_loss(logits, t["labels"].float(), t["mask"].float(),
                                         w_rank=float(w_rank), lam=float(lam), alpha=float(alpha),
-                                        gamma=gamma, soft=bool(soft_targets), bce_weights=bw)
+                                        gamma=gamma, soft=bool(soft_targets), bce_weights=bw,
+                                        **extra)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -241,8 +310,10 @@ def train_set_variant(model_factory, batches: Callable[[int], object],
         rows.append({"epoch": ep, "train_loss": tot / max(1, nb),
                      "train_rank": rank_tot / max(1, nb), "train_bce": bce_tot / max(1, nb),
                      **metrics})
+        beta_note = f" beta {beta_ep:.3f}" if beta_ep is not None else ""
         print(f"  [seed{seed} w{w_rank} l{lam} a{alpha}] epoch {ep:02d} "
-              f"loss {rows[-1]['train_loss']:.4f} val_cpm {metrics.get('val_cpm', float('nan')):.4f}",
+              f"loss {rows[-1]['train_loss']:.4f} val_cpm {metrics.get('val_cpm', float('nan')):.4f}"
+              f"{beta_note}",
               flush=True)
 
     write_epoch_table(rows, out_dir)
