@@ -154,6 +154,35 @@ def test_eval_grid_default_includes_the_pooled_rungs():
     assert DEFAULT_VARIANTS == ("B1", "B2", "A1", "A2", "FULL", "B1-P", "A2-P", "FULL-P")
 
 
+# --------------------------------------------------------------------------- deployed-model load
+def test_load_deployed_model_matches_hidden_for_every_mlp_rung(monkeypatch, tmp_path):
+    """The 2026-09-03 [MIG-5] crash: `hidden` was computed only for the literal "B1", so B1-P
+    (also an mlp rung) reached build_rescorer with hidden=None and raised. Same bug class as
+    the Branch-B embeddings loader. Pinned for BOTH mlp rungs and one set rung."""
+    torch = pytest.importorskip("torch")
+
+    import _phase4_common as PC
+    from abus_jcr.rescore.setmodel import build_rescorer
+
+    cap = ("L2H128h4", 2, 128, 4)
+
+    def fake_report(args, variant, seed):
+        # a real deployed report's shape, pointing at a checkpoint we create on the fly
+        m = build_rescorer(variant, 32, cap,
+                           hidden=PC.b1_hidden_for(args, 32, cap)
+                           if variant in ("B1", "B1-P") else None)
+        p = tmp_path / f"{variant}.pt"
+        torch.save({"model": m.state_dict()}, p)
+        return {"capacity": list(cap), "geom_mechanism": None,
+                "deployed": {"selected_ckpt": str(p)}}
+
+    monkeypatch.setattr(PC, "load_deployed_report", fake_report)
+    args = type("A", (), {"out_root": str(tmp_path)})()
+    for variant in ("B1", "B1-P", "A2-P"):
+        model, rep = PC.load_deployed_model(args, variant, 0, 32, device="cpu")
+        assert model is not None, variant
+
+
 # --------------------------------------------------------------------------- Branch B loading
 def test_token_only_inputs_never_touch_the_embedding_files(monkeypatch, tmp_path):
     """The exact 2026-09-02 session A/B crash: Branch B trains no encoder for seeds 1/2, so

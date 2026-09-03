@@ -79,7 +79,12 @@ def main() -> int:
                     _run(args, "FULL", seed, keep, f"no{block}", lam=args.full_lambda))
 
     if not args.skip_lambda0:
-        for variant in ("A2", "FULL"):
+        # FULL-P added 2026-09-03 (the loop predated the -P wiring): the lambda=0 endpoint reads
+        # DIFFERENTLY on the two objectives — per-set smooth-AP alone is shift-invariant and must
+        # collapse, the pooled surrogate is not and may hold — and RB [4.8] reports them side by
+        # side. The -P machinery (warm start, reference table, froc loss) engages automatically
+        # through run_variant_trial.
+        for variant in ("A2", "FULL", "FULL-P"):
             for seed in args.seeds:
                 results["lambda0_diagnostics"].append(
                     _run(args, variant, seed, list(C.RESC_TOKEN_BLOCKS), "lam0", lam=0.0))

@@ -545,9 +545,15 @@ def load_deployed_model(args, variant: str, seed: int, d_in: int, device: str = 
 
     from abus_jcr.rescore.setmodel import build_rescorer
 
+    from abus_jcr.rescore.variants import VARIANTS
+
     rep = load_deployed_report(args, variant, seed)
     capacity = tuple(rep["capacity"])
-    hidden = b1_hidden_for(args, d_in, capacity) if variant == "B1" else None
+    # Keyed on the MODULE, not the literal name "B1" — the 2026-09-03 [MIG-5] smoke crashed on
+    # B1-P (also an mlp rung) exactly the way the Branch-B embeddings loader did: a string
+    # special-case the -P twins walk past. build_rescorer itself dispatches on the module.
+    hidden = (b1_hidden_for(args, d_in, capacity)
+              if VARIANTS[variant]["module"] == "mlp" else None)
     model = build_rescorer(variant, d_in, capacity, hidden=hidden,
                            geom_mechanism=rep.get("geom_mechanism"))
     state = torch.load(rep["deployed"]["selected_ckpt"], map_location="cpu")

@@ -60,8 +60,12 @@ def main() -> int:
           f"latency {enc_rec['latency']['ms_mean']:.2f} +/- {enc_rec['latency']['ms_std']:.2f} ms")
 
     set_rec = {}
+    # Architecture-level costs: the -P rungs share these exactly (same modules, different loss).
+    # `hidden` keyed on the module, not the literal "B1" — same fix as load_deployed_model.
     for variant in ("B1", "B2", "FULL"):
-        hidden = b1_hidden_for(args, d_in, capacity) if variant == "B1" else None
+        from abus_jcr.rescore.variants import VARIANTS
+        hidden = (b1_hidden_for(args, d_in, capacity)
+                  if VARIANTS[variant]["module"] == "mlp" else None)
         model = build_rescorer(variant, d_in, capacity, hidden=hidden)
         use_geom = variant == "FULL"
         rec = setmodule_cost(model, d_in, device=args.device, k=args.k, use_geometry=use_geom)
