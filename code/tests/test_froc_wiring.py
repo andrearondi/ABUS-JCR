@@ -144,6 +144,16 @@ def test_froc_path_reaches_the_loss_with_the_full_pooled_contract():
     assert captured[-1]["beta"] == pytest.approx(froc_beta(1, 2))
 
 
+# --------------------------------------------------------------------------- [4.7] default rungs
+def test_eval_grid_default_includes_the_pooled_rungs():
+    """Fixed 2026-09-03: the old default was LADDER alone, and absent rungs are skipped rather
+    than faked — so a flagless [4.7] run silently dropped every pooled comparison (FULL-P vs B2
+    included) and stored no -P curves for the thesis FROC figure."""
+    from phase4_eval_grid import DEFAULT_VARIANTS
+
+    assert DEFAULT_VARIANTS == ("B1", "B2", "A1", "A2", "FULL", "B1-P", "A2-P", "FULL-P")
+
+
 # --------------------------------------------------------------------------- Branch B loading
 def test_token_only_inputs_never_touch_the_embedding_files(monkeypatch, tmp_path):
     """The exact 2026-09-02 session A/B crash: Branch B trains no encoder for seeds 1/2, so

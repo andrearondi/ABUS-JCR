@@ -43,7 +43,14 @@ from abus_jcr.rescore.evaluate import (assert_pool_identity, b0_rank_probability
                                        b0_spread_probability, compare_variants,
                                        evaluate_variant, score_pool, seed_summary)
 from abus_jcr.rescore.variants import (COMPARISONS, COMPARISONS_FLOOR, COMPARISONS_POOLED,
-                                       LADDER, VARIANTS, assert_fairness, fairness_table)
+                                       LADDER, LADDER_POOLED, VARIANTS, assert_fairness,
+                                       fairness_table)
+
+#: Default = the six pre-registered rungs PLUS the three pooled ones. Fixed 2026-09-03: the old
+#: default read LADDER alone, so a flagless [4.7] run silently skipped every COMPARISONS_POOLED
+#: entry — including FULL-P vs B2 — because absent rungs are "skipped rather than faked". A rung
+#: with nothing trained is still skipped gracefully. Pinned by tests/test_froc_wiring.py.
+DEFAULT_VARIANTS = tuple(v for v in tuple(LADDER) + tuple(LADDER_POOLED) if v in VARIANTS)
 
 from _phase4_common import (add_phase4_paths, assert_device, boxes_of, dump_json, grid_dir,
                             load_deployed_model, load_deployed_report, load_variant_inputs,
@@ -60,7 +67,7 @@ def main() -> int:
                     help="PAIRED draws per comparison x seed. Each draw costs 2 oracle calls, "
                          "so this dominates the wall clock — see RB_PHASE_4 [4.7]")
     ap.add_argument("--seeds", nargs="+", type=int, default=list(C.RESC_SEEDS))
-    ap.add_argument("--variants", nargs="+", default=[v for v in LADDER if v in VARIANTS])
+    ap.add_argument("--variants", nargs="+", default=list(DEFAULT_VARIANTS))
     args = ap.parse_args()
     assert_device(args.device)
 
