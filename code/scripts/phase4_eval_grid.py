@@ -61,6 +61,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="[4.7] evaluate the whole Phase-4 ladder")
     add_phase4_paths(ap)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--grid-tag", default="",
+                    help="suffix for every output file (grid<tag>.json etc). The seed-split "
+                         "route runs 3 single-seed jobs concurrently ([MIG-6], 2026-09-04) — "
+                         "without a tag they clobber one shared grid.json; "
+                         "phase4_merge_grid.py reassembles the parts")
     ap.add_argument("--n-boot", type=int, default=1000,
                     help="marginal CI draws per rung x seed (Inv. 12; Phase-3 precedent 1000)")
     ap.add_argument("--n-boot-compare", type=int, default=1000,
@@ -252,7 +257,7 @@ def main() -> int:
         gates["fairness"] = False
         tbl = {"error": str(e)}
         print(f"  exit check 5 — fairness contract: FAIL ({e})")
-    dump_json(tbl, grid_dir(args) / "fairness.json")
+    dump_json(tbl, grid_dir(args) / f"fairness{args.grid_tag}.json")
 
     spread_delta = [grid["per_seed"][str(s)]["B0-spread"]["cpm"] - grid["per_seed"][str(s)]["B0"]["cpm"]
                     for s in args.seeds]
@@ -284,9 +289,9 @@ def main() -> int:
     print(f"    flagged (excess > 0.05): {'none' if not flagged else flagged}{remedy}")
 
     grid["gates"] = gates
-    dump_json(grid, grid_dir(args) / "grid.json")
+    dump_json(grid, grid_dir(args) / f"grid{args.grid_tag}.json")
 
-    md = grid_dir(args) / "grid_table.md"
+    md = grid_dir(args) / f"grid_table{args.grid_tag}.md"
     md.parent.mkdir(parents=True, exist_ok=True)
     lines = ["| rung | val CPM (mean ± std) | ceiling | train CPM |", "|---|---|---|---|"]
     for rung in ["B0", "B0-spread", "B0-rank"] + list(args.variants):
