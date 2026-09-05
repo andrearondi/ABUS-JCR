@@ -54,13 +54,39 @@ DEFAULT_VARIANTS = tuple(v for v in tuple(LADDER) + tuple(LADDER_POOLED) if v in
 
 from _phase4_common import (add_phase4_paths, assert_device, boxes_of, dump_json, grid_dir,
                             load_deployed_model, load_deployed_report, load_variant_inputs,
-                            set_index_lists)
+                            reanchor, set_index_lists)
+
+
+def dump_pred_frames(preds, seed: int, out_dir: Path):
+    """Write one official-schema pred CSV per rung: ``pred_{rung}_seed{seed}.csv``.
+
+    Phase 5's ``--dump-preds``: the stratification + curve work then runs torch-free off
+    these files instead of re-loading models. Artefacts of the sanctioned evaluator
+    contacts, not extra contacts (PHASE_5_SPEC §5.2).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for rung, pred in preds.items():
+        p = out_dir / f"pred_{rung}_seed{int(seed)}.csv"
+        pred.to_csv(p, index=False)
+        written.append(p)
+    return written
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="[4.7] evaluate the whole Phase-4 ladder")
     add_phase4_paths(ap)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--eval-split", default="val", choices=["val", "test"],
+                    help="which frozen pool the ladder is scored on. 'test' is Phase 5's "
+                         "one-touch evaluation and additionally requires --phase5-execute")
+    ap.add_argument("--phase5-execute", action="store_true",
+                    help="required with --eval-split test (Inv. 9 — the Phase-5 runbook is "
+                         "the only sanctioned caller)")
+    ap.add_argument("--dump-preds", action="store_true",
+                    help="persist every rung's pred frame to grid/preds<grid-tag>/ "
+                         "(Phase 5: enables torch-free stratification + curve work)")
     ap.add_argument("--grid-tag", default="",
                     help="suffix for every output file (grid<tag>.json etc). The seed-split "
                          "route runs 3 single-seed jobs concurrently ([MIG-6], 2026-09-04) — "
@@ -74,14 +100,22 @@ def main() -> int:
     ap.add_argument("--seeds", nargs="+", type=int, default=list(C.RESC_SEEDS))
     ap.add_argument("--variants", nargs="+", default=list(DEFAULT_VARIANTS))
     args = ap.parse_args()
+    # BEFORE anything loads: the Inv.-9 gate. assert_device and every loader come after,
+    # so a mis-flagged invocation cannot touch a single byte of the test record.
+    if args.eval_split == "test" and not args.phase5_execute:
+        raise SystemExit("--eval-split test requires --phase5-execute (Inv. 9 — the "
+                         "one-touch Phase-5 protocol); refusing before anything is loaded")
     assert_device(args.device)
+    print(f"# eval split = {args.eval_split}")
 
-    grid = {"per_rung": {}, "per_seed": {}, "comparisons": {}, "gates": {}}
+    grid = {"per_rung": {}, "per_seed": {}, "comparisons": {}, "gates": {},
+            "eval_split": args.eval_split}
     preds_by_seed = {}          # seed -> {rung: pred DataFrame}
     inputs_by_seed = {}
 
     for seed in args.seeds:
-        inputs = load_variant_inputs(args, seed, C.RESC_TOKEN_BLOCKS)
+        inputs = load_variant_inputs(args, seed, C.RESC_TOKEN_BLOCKS,
+                                     eval_split=args.eval_split)
         inputs_by_seed[seed] = inputs
         rec_va, gt_va = inputs["rec_va"], inputs["gt_va"]
         preds_by_seed[seed] = {}
@@ -129,7 +163,8 @@ def main() -> int:
         for variant in args.variants:
             model, rep = load_deployed_model(args, variant, seed, inputs["d_in"], args.device)
             dep = rep["deployed"]
-            trial_json = json.loads((Path(dep["dir"]) / "selection.json").read_text())
+            # reanchor: dep["dir"] is the TRAINING machine's absolute path (PHASE_5_SPEC §5.1)
+            trial_json = json.loads((reanchor(args, dep["dir"]) / "selection.json").read_text())
             prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
                               n_rows=len(rec_va), device=args.device)
             res = evaluate_variant(rec_va, prob, gt_va, f"{variant}_seed{seed}", n_boot=args.n_boot)
@@ -147,13 +182,19 @@ def main() -> int:
                 "deployed": {k: v for k, v in dep.items() if k != "dir"},
                 "hyperparameters": trial_json.get("hyperparameters"),
             }
-            print(f"  seed {seed} {variant:<5} val CPM {res['cpm']:.4f} "
+            print(f"  seed {seed} {variant:<5} {args.eval_split} CPM {res['cpm']:.4f} "
                   f"[{res['ci']['lo']:.4f}, {res['ci']['hi']:.4f}]  ceiling {res['ceiling']:.4f}  "
                   f"train CPM {res_tr['cpm']:.4f}")
 
+        if args.dump_preds:
+            written = dump_pred_frames(preds_by_seed[seed], seed,
+                                       grid_dir(args) / f"preds{args.grid_tag}")
+            print(f"  # dumped {len(written)} pred frames -> {written[0].parent}")
+
     # --- per-rung mean +/- std over the 3 replicas (Inv. 14) ---------------------
+    lab = f"{args.eval_split} CPM"
     print(f"\n{'='*78}\n# [4.7] LADDER — CPM mean +/- std over {len(args.seeds)} replicas\n")
-    print(f"  {'rung':<10} {'val CPM':>16} {'ceiling':>16} {'train CPM':>10}")
+    print(f"  {'rung':<10} {lab:>16} {'ceiling':>16} {'train CPM':>10}")
     for rung in ["B0", "B0-spread", "B0-rank"] + list(args.variants):
         per = [grid["per_seed"][str(s)][rung] for s in args.seeds]
         summ = seed_summary(per)
@@ -293,7 +334,8 @@ def main() -> int:
 
     md = grid_dir(args) / f"grid_table{args.grid_tag}.md"
     md.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["| rung | val CPM (mean ± std) | ceiling | train CPM |", "|---|---|---|---|"]
+    lines = [f"| rung | {args.eval_split} CPM (mean ± std) | ceiling | train CPM |",
+             "|---|---|---|---|"]
     for rung in ["B0", "B0-spread", "B0-rank"] + list(args.variants):
         r = grid["per_rung"][rung]
         t = r.get("train_cpm_mean")

@@ -42,7 +42,10 @@ DEFAULT_PHASE3_OUT = _default_root("outputs_iso/phase3")
 DEFAULT_PHASE4_OUT = _default_root("outputs_iso/phase4")
 DEFAULT_DATA_ROOT = _default_root("data")
 
-_SPLIT_DIR = {"train": "Train", "val": "Validation"}   # Test is Phase 5 only (Inv. 9)
+# Test resolves here so paths CAN name it, but `load_record` refuses it without
+# --phase5-execute (Inv. 9) — the flag exists only on the Phase-5 entry points, so a
+# Phase-4 script can still never read Test, even by accident (2026-09-05, PHASE_5_SPEC §5.1).
+_SPLIT_DIR = {"train": "Train", "val": "Validation", "test": "Test"}
 
 
 def add_phase4_paths(parser: argparse.ArgumentParser) -> None:
@@ -69,6 +72,11 @@ def add_phase4_paths(parser: argparse.ArgumentParser) -> None:
                              "RETIRED (the promoted folds reach its 81 TP-bearing sets without its "
                              "costs) — do not promote it. Any substrate change needs the user's "
                              "explicit go-ahead (spec Open escalation #3).")
+    parser.add_argument("--variants-root", default=None,
+                        help="root holding the Phase-4 variants/ + capacity/ artefacts when "
+                             "--out-root points elsewhere (Phase 5 writes its test grids under "
+                             "outputs_iso/phase5 while reading the frozen Phase-4 checkpoints); "
+                             "default = --out-root")
 
 
 # ----------------------------------------------------------------------------- paths
@@ -101,6 +109,42 @@ def cache_root(args) -> Path:
             f"`export ABUS_AXIS_PROFILE=measured` and point --phase1-out at "
             f"outputs_iso/phase1.") from exc
     return root
+
+
+def phase4_root(args) -> Path:
+    """The root holding ``variants/`` + ``capacity/`` — ``--variants-root`` if set, else
+    ``--out-root``. One helper so every deployed-artefact read agrees on the answer."""
+    return Path(getattr(args, "variants_root", None) or args.out_root)
+
+
+_P4_MARKER = "outputs_iso/phase4/"
+
+
+def reanchor(args, path) -> Path:
+    """A recorded artefact path, re-rooted under :func:`phase4_root` when the recording
+    machine's root does not exist here.
+
+    Every ``variants/*.json`` records ``deployed.selected_ckpt`` and ``deployed.dir`` as
+    ABSOLUTE paths of the machine that trained them (Berzelius, ``/proj/...``). Evaluating
+    those frozen checkpoints on another host — the §13-M MAIA route, which Phase 5 makes the
+    primary test evaluator — therefore needs the path split at the one segment every Phase-4
+    artefact shares, ``outputs_iso/phase4/``, and re-rooted under this run's Phase-4 root.
+    A path that exists is returned untouched, so same-machine behaviour cannot change.
+    (2026-09-05, PHASE_5_SPEC §5.1 — found while specifying [M.3], which would have died on
+    the first checkpoint load.)
+    """
+    p = Path(path)
+    if p.exists():
+        return p
+    s = str(path)
+    if _P4_MARKER not in s:
+        raise SystemExit(f"artefact not found: {path} (and it carries no '{_P4_MARKER}' "
+                         f"segment to re-anchor at)")
+    cand = phase4_root(args) / s.split(_P4_MARKER, 1)[1]
+    if cand.exists():
+        return cand
+    raise SystemExit(f"artefact not found at its recorded path {path} nor re-anchored at "
+                     f"{cand} — is --variants-root pointing at the Phase-4 root?")
 
 
 def candidates_dir(args) -> Path:
@@ -202,9 +246,16 @@ def loader_kwargs(num_workers: int, prefetch_factor: int = 4) -> Dict:
 
 # ----------------------------------------------------------------------------- data
 def load_record(args, split: str) -> pd.DataFrame:
-    """The frozen Phase-3 candidate record for a split (Parquet, CSV fallback)."""
+    """The frozen Phase-3 candidate record for a split (Parquet, CSV fallback).
+
+    ``test`` is readable ONLY under ``--phase5-execute`` (Inv. 9): the flag exists on the
+    Phase-5 entry points alone, so every Phase-4 script keeps refusing Test by construction.
+    """
     if split not in _SPLIT_DIR:
-        raise SystemExit(f"Phase 4 reads train/val only (Inv. 9); got {split!r}")
+        raise SystemExit(f"unknown split {split!r}")
+    if split == "test" and not getattr(args, "phase5_execute", False):
+        raise SystemExit("Refusing to read the Test record without --phase5-execute "
+                         "(Inv. 9 — Test is touched only by the Phase-5 runbook)")
     suffix = f"_{args.record_suffix}" if getattr(args, "record_suffix", "") else ""
     base = candidates_dir(args) / f"candidates_{split}{suffix}"
     rec = read_candidate_record(base).reset_index(drop=True)
@@ -340,13 +391,17 @@ def set_index_lists(record_df: pd.DataFrame) -> List[np.ndarray]:
 
 
 # ----------------------------------------------------------------------------- the runner
-def load_variant_inputs(args, seed: int, use_blocks: Sequence[str]):
+def load_variant_inputs(args, seed: int, use_blocks: Sequence[str], eval_split: str = "val"):
     """Everything a set-module run needs: records, standardised tokens, GT, boxes.
 
-    The standardiser is fitted on the TRAIN pool and applied unchanged to val (Inv. 9/10).
+    The standardiser is fitted on the TRAIN pool and applied unchanged to the eval split
+    (Inv. 9/10). ``eval_split`` defaults to val (every Phase-4 caller, unchanged); Phase 5
+    passes ``"test"`` through the flag-gated ``load_record`` path. The returned keys keep
+    their historical ``rec_va``/``Zva``/``gt_va`` names WHATEVER the split — they mean "the
+    eval-split objects", and renaming them would fork every consumer for zero behaviour.
     """
     rec_tr = load_record(args, "train")
-    rec_va_all = load_record(args, "val")
+    rec_va_all = load_record(args, eval_split)
     rec_va = val_pool_for_seed(rec_va_all, seed)
 
     # Embeddings are loaded ONLY when the appearance block is enabled. Until 2026-09-02 the
@@ -356,6 +411,10 @@ def load_variant_inputs(args, seed: int, use_blocks: Sequence[str]):
     # unaffected (the gate below already passed None into the features).
     emb_tr = emb_va = None
     if "appearance" in use_blocks:
+        if eval_split != "val":
+            raise SystemExit("appearance embeddings exist for train/val only (Branch B, "
+                             f"2026-09-01, trains no encoder and no {eval_split} embeddings "
+                             "were ever cached) — the deployed rungs are token-only")
         emb_tr = np.load(emb_path(args, "train", seed))
         emb_va_all = np.load(emb_path(args, "val", seed))
         va_rows = rec_va_all.index[rec_va_all["detector_of_origin"]
@@ -366,7 +425,7 @@ def load_variant_inputs(args, seed: int, use_blocks: Sequence[str]):
                                        iso_shape_map(args, rec_tr), stats=None)
     Zva, _, _ = build_features(rec_va, emb_va, use_blocks,
                                iso_shape_map(args, rec_va), stats=stats)
-    gt_va = gt_for_pool(load_gt(args, "val"), rec_va)
+    gt_va = gt_for_pool(load_gt(args, eval_split), rec_va)
     gt_tr = gt_for_pool(load_gt(args, "train"), rec_tr)
     return {"rec_tr": rec_tr, "rec_va": rec_va, "Ztr": Ztr, "Zva": Zva, "names": names,
             "stats": stats, "gt_va": gt_va, "gt_tr": gt_tr, "d_in": int(Ztr.shape[1])}
@@ -474,7 +533,7 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
 
         twin = variant[:-2]
         twin_rep = load_deployed_report(args, twin, seed)
-        ckpt_path = twin_rep["deployed"]["selected_ckpt"]
+        ckpt_path = reanchor(args, twin_rep["deployed"]["selected_ckpt"])
         init_state = torch.load(ckpt_path, map_location="cpu")["model"]
         # The two lines the results template requires on every -P run:
         print(f"# {variant}: POOLED FROC surrogate — n_vol = {n_vol}, reference table "
@@ -523,7 +582,7 @@ def run_variant_trial(args, variant: str, seed: int, trial: Dict, capacity, out_
 
 def load_deployed_report(args, variant: str, seed: int) -> Dict:
     """The ``[4.6]`` report for one ``(variant, seed)`` — the deployed trial + checkpoint."""
-    p = Path(args.out_root) / "variants" / f"{variant}_seed{int(seed)}.json"
+    p = phase4_root(args) / "variants" / f"{variant}_seed{int(seed)}.json"
     if not p.exists():
         raise SystemExit(f"missing {p} — run [4.6] for {variant} seed {seed} first")
     return json.loads(p.read_text())
@@ -533,7 +592,7 @@ def b1_hidden_for(args, d_in: int, capacity) -> int:
     """B1's fairness-matched hidden width: the [4.5] value if frozen, else recomputed."""
     from abus_jcr.rescore.variants import match_b1_capacity
 
-    p = Path(args.out_root) / "capacity" / "capacity_choice.json"
+    p = phase4_root(args) / "capacity" / "capacity_choice.json"
     if p.exists():
         return int(json.loads(p.read_text())["b1_hidden"])
     return match_b1_capacity(d_in, capacity[2], set_module_params(d_in, capacity))
@@ -556,7 +615,8 @@ def load_deployed_model(args, variant: str, seed: int, d_in: int, device: str = 
               if VARIANTS[variant]["module"] == "mlp" else None)
     model = build_rescorer(variant, d_in, capacity, hidden=hidden,
                            geom_mechanism=rep.get("geom_mechanism"))
-    state = torch.load(rep["deployed"]["selected_ckpt"], map_location="cpu")
+    # reanchor: the JSON records the TRAINING machine's absolute path (PHASE_5_SPEC §5.1)
+    state = torch.load(reanchor(args, rep["deployed"]["selected_ckpt"]), map_location="cpu")
     model.load_state_dict(state["model"])
     return model.to(device).eval(), rep
 

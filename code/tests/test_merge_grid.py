@@ -90,3 +90,17 @@ def test_mismatched_rung_sets_refuse():
     short = _part(1, {k: v for k, v in CPMS[1].items() if k != "FULL-P"})
     with pytest.raises(SystemExit, match="disagree on the rung set"):
         merge_grids([_part(0, CPMS[0]), short])
+
+
+def test_mixed_eval_splits_refuse_and_matching_ones_carry_through():
+    # Phase 5 (2026-09-05): a val part must never merge with a test part — the two grids
+    # answer different questions. Parts without the key are legacy val grids.
+    parts = [_part(s, c) for s, c in enumerate(CPMS)]
+    parts[1]["eval_split"] = "test"
+    with pytest.raises(SystemExit, match="eval_split"):
+        merge_grids(parts)
+    tagged = [_part(s, c) for s, c in enumerate(CPMS)]
+    for p in tagged:
+        p["eval_split"] = "test"
+    assert merge_grids(tagged)["eval_split"] == "test"
+    assert merge_grids([_part(s, c) for s, c in enumerate(CPMS)])["eval_split"] == "val"

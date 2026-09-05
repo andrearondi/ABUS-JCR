@@ -33,6 +33,15 @@ def merge_grids(parts: list) -> dict:
     """Assemble one grid from single-seed (or disjoint multi-seed) parts."""
     merged = {"per_rung": {}, "per_seed": {}, "comparisons": {}, "gates": {}}
 
+    # Phase 5 (2026-09-05): parts carry the split they scored; a val part merged into a
+    # test grid (or vice versa) would silently average two different questions. Parts
+    # written before the key existed are val grids by construction.
+    splits = {p.get("eval_split", "val") for p in parts}
+    if len(splits) > 1:
+        raise SystemExit(f"parts disagree on eval_split: {sorted(splits)} — a val part "
+                         f"cannot be merged with a test part; check the --tags list")
+    merged["eval_split"] = splits.pop()
+
     # --- per_seed: a disjoint union, nothing recomputed ---------------------------
     for p in parts:
         overlap = set(p["per_seed"]) & set(merged["per_seed"])
@@ -102,9 +111,10 @@ def main() -> int:
     merged = merge_grids(parts)
     seeds = sorted(merged["per_seed"])
 
+    lab = f"{merged['eval_split']} CPM"
     print(f"\n{'='*78}\n# [4.7] LADDER (merged over {len(seeds)} seed-split parts) — "
           f"CPM mean +/- std\n")
-    print(f"  {'rung':<10} {'val CPM':>16} {'ceiling':>16} {'train CPM':>10}")
+    print(f"  {'rung':<10} {lab:>16} {'ceiling':>16} {'train CPM':>10}")
     for rung, r in merged["per_rung"].items():
         t = r.get("train_cpm_mean")
         print(f"  {rung:<10} {r['cpm_mean']:.4f} +/- {r['cpm_std']:.4f}  "
@@ -128,7 +138,8 @@ def main() -> int:
 
     dump_json(merged, grid_dir(args) / f"grid{args.out_tag}.json")
     md = grid_dir(args) / f"grid_table{args.out_tag}.md"
-    lines = ["| rung | val CPM (mean ± std) | ceiling | train CPM |", "|---|---|---|---|"]
+    lines = [f"| rung | {merged['eval_split']} CPM (mean ± std) | ceiling | train CPM |",
+             "|---|---|---|---|"]
     for rung, r in merged["per_rung"].items():
         t = r.get("train_cpm_mean")
         lines.append(f"| {rung} | {r['cpm_mean']:.4f} ± {r['cpm_std']:.4f} | "
