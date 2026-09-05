@@ -153,3 +153,12 @@ def test_dump_pred_frames_one_csv_per_rung_same_pool_different_probability(tmp_p
     assert (a[["public_id", "coordX", "x_length"]].values
             == b[["public_id", "coordX", "x_length"]].values).all()
     assert not (a["probability"].values == b["probability"].values).all()
+
+
+def test_costed_set_sizes_are_the_measured_substrate():
+    # The first [4.10] run costed the LEGACY sizes (85/292/509) because this constant
+    # survived the substrate promotion — caught 2026-09-05, RESULTS_PHASE_4_ISO [4.10]
+    # read-off. The measured pools: val median 44 / val max 198 / train max 343.
+    from abus_jcr.rescore.cost import COSTED_SET_SIZES
+
+    assert COSTED_SET_SIZES == (44, 198, 343)

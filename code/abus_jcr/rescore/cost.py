@@ -10,7 +10,7 @@ that has to be *shown*, not asserted.
 Measured here:
 * encoder params/GFLOPs at ``(1, 1, 48, 48, 48)``;
 * set-module params/GFLOPs at three PROMOTED-pool set sizes — the val **median (85)**, the
-  val **max (292)** and the overall **max (509**, train fold0 vol14), see ``COSTED_SET_SIZES``;
+  val **max (198)** and the overall **max (343**, train), see ``COSTED_SET_SIZES``;
 * per-set rescoring latency (mean ± std over 50 timed forwards);
 * per-volume crop-extraction latency (the CPU cost of re-extracting a set's crops).
 
@@ -34,13 +34,15 @@ from ..detect.cost import count_params
 __all__ = ["MEDIAN_SET_SIZE", "MAX_SET_SIZE", "MAX_TRAIN_SET_SIZE", "COSTED_SET_SIZES",
            "encoder_cost", "setmodule_cost", "crop_extraction_cost", "write_cost"]
 
-#: PROMOTED-pool set sizes (updated 2026-08-09; were 92 / 253 from the ARCHIVED pool).
-#: Val median 85.0 and val max 292 come from ``[F.9]`` §4 / ``[F.7]``'s per-volume log;
-#: the overall max is **train fold0 vol14 at 509**, which the set module sees during
-#: training, so it is costed too — the archived pool never had a set that large.
-MEDIAN_SET_SIZE = 85          # val, the size the deployed rescorer meets most often
-MAX_SET_SIZE = 292            # val, the worst single evaluation set
-MAX_TRAIN_SET_SIZE = 509      # train fold0 vol14 — the worst set anywhere in either pool
+#: MEASURED-substrate set sizes (updated 2026-09-05; were 85 / 292 / 509 from the pool the
+#: 2026-08-25 iso promotion demoted — the first [4.10] run costed those legacy sizes, and the
+#: attention rungs scale quadratically in set size, so the numbers could not be honestly
+#: interpolated down: RESULTS_PHASE_4_ISO [4.10] read-off). Val median 44 and val max 198,
+#: train max 343, from the iso pools (RB_PHASE_4_ISO §0: val 4 696 rows · 90 sets · max 198 ·
+#: median 44; train 7 764 · 100 · max 343).
+MEDIAN_SET_SIZE = 44          # val, the size the deployed rescorer meets most often
+MAX_SET_SIZE = 198            # val, the worst single evaluation set
+MAX_TRAIN_SET_SIZE = 343      # train — the worst set anywhere in either pool
 
 #: What ``setmodule_cost`` times by default: typical, worst-at-inference, worst-anywhere.
 COSTED_SET_SIZES = (MEDIAN_SET_SIZE, MAX_SET_SIZE, MAX_TRAIN_SET_SIZE)

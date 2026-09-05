@@ -1,7 +1,7 @@
 """[4.10] Cost record — params / GFLOPs / latency (do-not-drift #16, exit check 12).
 
 Encoder cost at ``(1, 1, 48, 48, 48)``; set-module cost at the PROMOTED pool's val **median
-(85)**, val **max (292)** and overall **max (509)** set sizes (``cost.COSTED_SET_SIZES``);
+(44)**, val **max (198)** and overall **max (343)** set sizes (``cost.COSTED_SET_SIZES``);
 per-set rescoring latency (mean ± std over 50 timed forwards); per-volume crop-extraction
 latency. Appended next to the recorded Phase-3 detector cost ([P3U3.5]: 6.688 s/vol detector
 + 0.364 s/vol linking + 0.019 s/vol aggregation, 36.34 M params / 22.64 GFLOPs) so the
