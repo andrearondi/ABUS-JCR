@@ -75,7 +75,11 @@ def test_reanchor_rebases_a_foreign_absolute_path(tmp_path):
     ck.parent.mkdir(parents=True)
     ck.write_bytes(b"x")
     args = SimpleNamespace(out_root="/nowhere", variants_root=str(root))
-    recorded = ("/proj/berzbiomedicalimagingkth/users/x_andro/Andre2/"
+    # A root that exists on NO machine. The first version used the real Berzelius /proj
+    # path — and on Berzelius that file EXISTS, so reanchor's identity branch (correctly)
+    # returned it and the rebase assertion failed there (2026-09-05, [4.11]). The identity
+    # behaviour has its own test below; this one must isolate the rebase branch.
+    recorded = ("/no-such-machine-root/Andre2/"
                 "outputs_iso/phase4/variants/FULL_seed0_trial1/epoch02.pt")
     assert PC.reanchor(args, recorded) == ck
 
