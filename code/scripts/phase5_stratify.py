@@ -75,7 +75,7 @@ def as_record_frame(pred_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def stratified_eval(pred_df: pd.DataFrame, gt_df: pd.DataFrame, bins: Dict[int, str],
-                    n_boot: int, tag: str) -> Dict[str, dict]:
+                    n_boot: int, tag: str, workers: int = 1) -> Dict[str, dict]:
     """Per-bin ``evaluate_variant`` on the volume subset; empty bins are absent, never faked.
 
     The pred frame IS the record for the oracle's purposes (official schema + probability),
@@ -90,7 +90,7 @@ def stratified_eval(pred_df: pd.DataFrame, gt_df: pd.DataFrame, bins: Dict[int, 
         sub_p = pred_df[pred_df["public_id"].isin(vols)].reset_index(drop=True)
         sub_g = gt_df[gt_df["public_id"].isin(vols)].reset_index(drop=True)
         res = evaluate_variant(as_record_frame(sub_p), sub_p["probability"].to_numpy(float),
-                               sub_g, f"{tag}_{b}", n_boot=n_boot)
+                               sub_g, f"{tag}_{b}", n_boot=n_boot, workers=workers)
         out[b] = {k: v for k, v in res.items() if k != "pred"}
     return out
 
@@ -137,6 +137,8 @@ def main() -> int:
     ap.add_argument("--preds-dirs", nargs="+", required=True,
                     help="the preds<grid-tag> dirs written by --dump-preds (one per seed job)")
     ap.add_argument("--n-boot", type=int, default=1000)
+    ap.add_argument("--boot-workers", type=int, default=1,
+                    help="parallel bootstrap-draw workers (bit-identical; eval/froc 2026-09-09)")
     ap.add_argument("--seeds", nargs="+", type=int, default=list(C.RESC_SEEDS))
     ap.add_argument("--out-tag", default="", help="suffix for stratified<tag>.json")
     args = ap.parse_args()
@@ -165,7 +167,8 @@ def main() -> int:
             # round_trip: the default C parser is off by 1 ulp on some values (2026-09-09)
             pred = pd.read_csv(_find_pred(args.preds_dirs, rung, seed),
                                float_precision="round_trip")
-            res = stratified_eval(pred, gt_ev, bins, n_boot=args.n_boot, tag=f"{rung}_s{seed}")
+            res = stratified_eval(pred, gt_ev, bins, n_boot=args.n_boot, tag=f"{rung}_s{seed}",
+                                  workers=args.boot_workers)
             seed_out["rungs"][rung] = res
             row = "  ".join(f"{b}: {res[b]['cpm']:.4f} [{res[b]['ci']['lo']:.4f}, "
                             f"{res[b]['ci']['hi']:.4f}] (n={res[b]['n_volumes']})"
