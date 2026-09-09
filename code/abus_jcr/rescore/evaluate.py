@@ -112,7 +112,7 @@ def b0_rank_probability(prob, set_ids) -> np.ndarray:
 
 def evaluate_variant(record_df: pd.DataFrame, prob, gt_df: pd.DataFrame, seed_tag: str,
                      n_boot: int = 1000, boot_seed: int = 0,
-                     prob_col: str = "_prob_eval") -> Dict:
+                     prob_col: str = "_prob_eval", workers: int = 1) -> Dict:
     """Score ONE seed pool: ``to_official_pred_csv -> evaluate_froc -> CPM/ceiling/CI``.
 
     Returns the full payload the report needs: ``cpm``, ``ceiling`` (rung-invariant by
@@ -129,7 +129,8 @@ def evaluate_variant(record_df: pd.DataFrame, prob, gt_df: pd.DataFrame, seed_ta
     pred = to_official_pred_csv(rec, prob_col)
     res = evaluate_froc(gt_df, pred)
     if int(n_boot) > 0:
-        ci = bootstrap_cpm_ci(gt_df, pred, n_boot=n_boot, seed=boot_seed)
+        # workers > 1 parallelises the draws with bit-identical output (eval/froc, 2026-09-09)
+        ci = bootstrap_cpm_ci(gt_df, pred, n_boot=n_boot, seed=boot_seed, workers=workers)
     else:
         ci = {"point": cpm(res), "lo": float("nan"), "hi": float("nan")}
     det = res["detection"]
@@ -148,10 +149,11 @@ def evaluate_variant(record_df: pd.DataFrame, prob, gt_df: pd.DataFrame, seed_ta
 
 
 def compare_variants(gt_df: pd.DataFrame, pred_a: pd.DataFrame, pred_b: pd.DataFrame,
-                     name_a: str, name_b: str, n_boot: int = 1000, seed: int = 0) -> Dict:
+                     name_a: str, name_b: str, n_boot: int = 1000, seed: int = 0,
+                     workers: int = 1) -> Dict:
     """One pre-registered comparison, with the PAIRED interval and the pool-identity check."""
     assert_pool_identity(pred_a, pred_b)
-    d = paired_bootstrap_delta(gt_df, pred_a, pred_b, n_boot=n_boot, seed=seed)
+    d = paired_bootstrap_delta(gt_df, pred_a, pred_b, n_boot=n_boot, seed=seed, workers=workers)
     return {"comparison": f"{name_a} - {name_b}", "delta": d["delta_point"],
             "lo": d["lo"], "hi": d["hi"], "frac_positive": d["frac_positive"],
             "n_boot": d["n_boot"]}

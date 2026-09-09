@@ -160,6 +160,11 @@ def main() -> int:
     ap.add_argument("--dump-preds", action="store_true",
                     help="persist every rung's pred frame to grid/preds<grid-tag>/ "
                          "(Phase 5: enables torch-free stratification + curve work)")
+    ap.add_argument("--boot-workers", type=int, default=1,
+                    help="parallel bootstrap-draw workers — bit-identical results by "
+                         "construction (eval/froc 2026-09-09: draw indices pre-generated "
+                         "from the same seeded RNG, evaluated in a pool, reassembled in "
+                         "order). Size to the host's REAL core quota, not nproc")
     ap.add_argument("--resume", action="store_true",
                     help="persist each completed unit to grid/partial<grid-tag>/ and load "
                          "persisted units instead of recomputing — for hosts that can die "
@@ -184,7 +189,7 @@ def main() -> int:
         raise SystemExit("--eval-split test requires --phase5-execute (Inv. 9 — the "
                          "one-touch Phase-5 protocol); refusing before anything is loaded")
     assert_device(args.device)
-    print(f"# eval split = {args.eval_split}")
+    print(f"# eval split = {args.eval_split} | boot workers = {args.boot_workers}")
 
     grid = {"per_rung": {}, "per_seed": {}, "comparisons": {}, "gates": {},
             "eval_split": args.eval_split}
@@ -210,7 +215,8 @@ def main() -> int:
         # own gap is evidence.
         def _b0_unit():
             b0 = evaluate_variant(rec_va, rec_va["score_max"].to_numpy(float), gt_va,
-                                  f"B0_seed{seed}", n_boot=args.n_boot)
+                                  f"B0_seed{seed}", n_boot=args.n_boot,
+                                  workers=args.boot_workers)
             b0_tr = evaluate_variant(inputs["rec_tr"],
                                      inputs["rec_tr"]["score_max"].to_numpy(float),
                                      inputs["gt_tr"], f"B0_train_seed{seed}", n_boot=0)
@@ -222,7 +228,8 @@ def main() -> int:
         def _spread_unit():
             r = evaluate_variant(rec_va,
                                  b0_spread_probability(rec_va["score_max"].to_numpy(float)),
-                                 gt_va, f"B0spread_seed{seed}", n_boot=args.n_boot)
+                                 gt_va, f"B0spread_seed{seed}", n_boot=args.n_boot,
+                                 workers=args.boot_workers)
             return {k: v for k, v in r.items() if k != "pred"}, r["pred"]
 
         # B0-rank — the REAL floor. Label-free, zero-parameter, deployable, and [I3.11]
@@ -233,7 +240,8 @@ def main() -> int:
             r = evaluate_variant(rec_va,
                                  b0_rank_probability(rec_va["score_max"].to_numpy(float),
                                                      rec_va["public_id"].to_numpy()),
-                                 gt_va, f"B0rank_seed{seed}", n_boot=args.n_boot)
+                                 gt_va, f"B0rank_seed{seed}", n_boot=args.n_boot,
+                                 workers=args.boot_workers)
             return {k: v for k, v in r.items() if k != "pred"}, r["pred"]
 
         b0_p, preds_by_seed[seed]["B0"] = cached_eval(f"B0_seed{seed}", _b0_unit)
@@ -272,7 +280,7 @@ def main() -> int:
                 prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
                                   n_rows=len(rec_va), device=args.device)
                 res = evaluate_variant(rec_va, prob, gt_va, f"{variant}_seed{seed}",
-                                       n_boot=args.n_boot)
+                                       n_boot=args.n_boot, workers=args.boot_workers)
                 prob_tr = score_pool(model, Ztr32, tr_coord, tr_length, tr_sets,
                                      n_rows=len(inputs["rec_tr"]), device=args.device)
                 # train-pool CPM is the overfitting WATCH (exit check 13), not a reported
@@ -334,7 +342,8 @@ def main() -> int:
             else:
                 cmpres = compare_variants(inputs_by_seed[seed]["gt_va"],
                                           preds_by_seed[seed][a], preds_by_seed[seed][b],
-                                          a, b, n_boot=args.n_boot_compare, seed=0)
+                                          a, b, n_boot=args.n_boot_compare, seed=0,
+                                          workers=args.boot_workers)
                 if args.resume:
                     save_unit(part_dir, unit_name, cmpres)
             rows.append(cmpres)

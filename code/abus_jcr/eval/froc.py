@@ -72,12 +72,79 @@ def write_pred_csv(rows, path) -> None:
     df[PRED_COLUMNS].to_csv(path, index=False)
 
 
+# ----------------------------------------------------------------- parallel draw workers
+# Added 2026-09-09 (Phase 5). A reportable draw costs ~12 s measured — two CSV writes plus
+# the vendored oracle re-reading them — so an n=1000 unit is hours and the full test grid is
+# days on one core. Draws are independent GIVEN their resample indices, and the indices are
+# pre-generated from the SAME seeded RNG in the same order, so evaluating them in a worker
+# pool and reassembling in submission order returns arrays identical to the sequential loop
+# (pinned by tests/test_parallel_bootstrap.py; every draw's evaluate_froc runs in its own
+# TemporaryDirectory, so there is no shared file to collide on). ``workers=1`` — the default
+# at every call site — takes the sequential path.
+_BOOT_STATE: dict = {}
+
+
+def _init_boot_worker(state: dict) -> None:
+    _BOOT_STATE.clear()
+    _BOOT_STATE.update(state)
+
+
+def _relabelled_gt(draw) -> pd.DataFrame:
+    pids, gt_by_pid = _BOOT_STATE["pids"], _BOOT_STATE["gt"]
+    parts = []
+    for new_id, src_idx in enumerate(draw):
+        g = gt_by_pid[pids[src_idx]].copy()
+        g["public_id"] = new_id
+        parts.append(g)
+    return pd.concat(parts, ignore_index=True)
+
+
+def _relabelled_pred(draw, key: str) -> pd.DataFrame:
+    pids, by_pid = _BOOT_STATE["pids"], _BOOT_STATE[key]
+    parts = []
+    for new_id, src_idx in enumerate(draw):
+        src = by_pid[pids[src_idx]]
+        if len(src) > 0:
+            p = src.copy()
+            p["public_id"] = new_id
+            parts.append(p)
+    return (pd.concat(parts, ignore_index=True) if parts
+            else pd.DataFrame(columns=PRED_COLUMNS))
+
+
+def _marginal_draw(draw) -> float:
+    return cpm(evaluate_froc(_relabelled_gt(draw), _relabelled_pred(draw, "pred")))
+
+
+def _paired_draw(draw) -> float:
+    gt_boot = _relabelled_gt(draw)
+    return (cpm(evaluate_froc(gt_boot, _relabelled_pred(draw, "a")))
+            - cpm(evaluate_froc(gt_boot, _relabelled_pred(draw, "b"))))
+
+
+def _run_draws(worker, draws, state: dict, workers: int) -> list:
+    if int(workers) <= 1:
+        _init_boot_worker(state)
+        return [worker(d) for d in draws]
+    import multiprocessing as mp
+
+    # fork where available (Linux default; macOS defaults to spawn, which re-imports the
+    # world per worker and cannot handle a heredoc __main__ at all — measured 2026-09-09).
+    # The workers touch only numpy/pandas + per-call TemporaryDirectories, so fork is safe.
+    method = "fork" if "fork" in mp.get_all_start_methods() else None
+    with mp.get_context(method).Pool(processes=int(workers), initializer=_init_boot_worker,
+                                     initargs=(state,)) as pool:
+        return pool.map(worker, draws,
+                        chunksize=max(1, len(draws) // (int(workers) * 8)))
+
+
 def bootstrap_cpm_ci(
     gt_df: pd.DataFrame,
     pred_df: pd.DataFrame,
     n_boot: int = 1000,
     seed: int = 0,
     ci: float = 0.95,
+    workers: int = 1,
 ) -> dict:
     """Seeded volume-level bootstrap CI on CPM (Inv. 12).
 
@@ -108,29 +175,13 @@ def bootstrap_cpm_ci(
     gt_by_pid = {pid: gt_df[gt_df["public_id"] == pid] for pid in pids}
     pred_by_pid = {pid: pred_df[pred_df["public_id"] == pid] for pid in pids}
 
+    # The RNG serves ONLY these choice calls, so pre-generating the whole draw sequence is
+    # byte-identical to drawing inside the loop — and it is what lets the draws parallelise.
     rng = np.random.default_rng(seed)
-    boots = []
     n = len(pids)
-    for _ in range(n_boot):
-        draw = rng.choice(n, size=n, replace=True)
-        gt_parts, pred_parts = [], []
-        for new_id, src_idx in enumerate(draw):
-            pid = pids[src_idx]
-            g = gt_by_pid[pid].copy()
-            g["public_id"] = new_id
-            gt_parts.append(g)
-            p = pred_by_pid[pid]
-            if len(p) > 0:
-                p = p.copy()
-                p["public_id"] = new_id
-                pred_parts.append(p)
-        gt_boot = pd.concat(gt_parts, ignore_index=True)
-        pred_boot = (
-            pd.concat(pred_parts, ignore_index=True)
-            if pred_parts
-            else pd.DataFrame(columns=PRED_COLUMNS)
-        )
-        boots.append(cpm(evaluate_froc(gt_boot, pred_boot)))
+    draws = [rng.choice(n, size=n, replace=True) for _ in range(int(n_boot))]
+    boots = _run_draws(_marginal_draw, draws,
+                       {"pids": pids, "gt": gt_by_pid, "pred": pred_by_pid}, workers)
 
     boots = np.asarray(boots, dtype=float)
     alpha = (1.0 - ci) / 2.0
@@ -146,6 +197,7 @@ def paired_bootstrap_delta(
     n_boot: int = 1000,
     seed: int = 0,
     ci: float = 0.95,
+    workers: int = 1,
 ) -> dict:
     """PAIRED volume-level bootstrap CI on ``CPM(a) - CPM(b)`` (Inv. 12; Phase 4 §4.9).
 
@@ -171,30 +223,12 @@ def paired_bootstrap_delta(
     a_by_pid = {pid: pred_a[pred_a["public_id"] == pid] for pid in pids}
     b_by_pid = {pid: pred_b[pred_b["public_id"] == pid] for pid in pids}
 
+    # Same pre-generation argument as bootstrap_cpm_ci: the RNG serves only the choice calls.
     rng = np.random.default_rng(seed)
     n = len(pids)
-    boots = []
-    for _ in range(n_boot):
-        draw = rng.choice(n, size=n, replace=True)
-        gt_parts, a_parts, b_parts = [], [], []
-        for new_id, src_idx in enumerate(draw):
-            pid = pids[src_idx]
-            g = gt_by_pid[pid].copy()
-            g["public_id"] = new_id
-            gt_parts.append(g)
-            for src, parts in ((a_by_pid[pid], a_parts), (b_by_pid[pid], b_parts)):
-                if len(src) > 0:
-                    p = src.copy()
-                    p["public_id"] = new_id
-                    parts.append(p)
-        gt_boot = pd.concat(gt_parts, ignore_index=True)
-
-        def _stack(parts):
-            return (pd.concat(parts, ignore_index=True) if parts
-                    else pd.DataFrame(columns=PRED_COLUMNS))
-
-        boots.append(cpm(evaluate_froc(gt_boot, _stack(a_parts)))
-                     - cpm(evaluate_froc(gt_boot, _stack(b_parts))))
+    draws = [rng.choice(n, size=n, replace=True) for _ in range(int(n_boot))]
+    boots = _run_draws(_paired_draw, draws,
+                       {"pids": pids, "gt": gt_by_pid, "a": a_by_pid, "b": b_by_pid}, workers)
 
     boots = np.asarray(boots, dtype=float)
     alpha = (1.0 - ci) / 2.0
