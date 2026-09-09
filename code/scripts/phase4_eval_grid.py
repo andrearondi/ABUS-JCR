@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from abus_jcr import conventions as C
 from abus_jcr.rescore.evaluate import (assert_pool_identity, b0_rank_probability,
@@ -52,9 +54,78 @@ from abus_jcr.rescore.variants import (COMPARISONS, COMPARISONS_FLOOR, COMPARISO
 #: with nothing trained is still skipped gracefully. Pinned by tests/test_froc_wiring.py.
 DEFAULT_VARIANTS = tuple(v for v in tuple(LADDER) + tuple(LADDER_POOLED) if v in VARIANTS)
 
-from _phase4_common import (add_phase4_paths, assert_device, boxes_of, dump_json, grid_dir,
-                            load_deployed_model, load_deployed_report, load_variant_inputs,
-                            reanchor, set_index_lists)
+from _phase4_common import (_jsonable, add_phase4_paths, assert_device, boxes_of, dump_json,
+                            grid_dir, load_deployed_model, load_deployed_report,
+                            load_variant_inputs, reanchor, set_index_lists)
+
+
+# ----------------------------------------------------------------- resume persistence
+# Added 2026-09-09: the Phase-5 evaluator host is a JupyterHub pod that gets restarted on a
+# hours-to-a-day cadence (twice during [5.5] alone), and a fresh single-seed reportable is
+# ~7-8 h — a coin flip per attempt. Each completed unit (a rung's marginal evaluation, a
+# comparison pair) is therefore persisted the moment it finishes, and --resume loads it back
+# instead of recomputing. The numbers cannot move: bootstrap_cpm_ci and compare_variants are
+# pure functions of their inputs with fixed seeds (pinned by tests/test_paired_bootstrap.py),
+# and both JSON and pandas' CSV writer round-trip float64 exactly. A torn file (the pod died
+# mid-write) fails the load and the unit recomputes — writes go tmp-then-rename so a torn
+# final path cannot exist in the first place.
+
+def _unit_paths(part_dir: Path, name: str):
+    return Path(part_dir) / f"{name}.json", Path(part_dir) / f"{name}.csv"
+
+
+def save_unit(part_dir: Path, name: str, payload: dict, pred=None) -> None:
+    """Persist one completed unit atomically; ``pred`` (a pred frame) is optional."""
+    part_dir = Path(part_dir)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    jp, cp = _unit_paths(part_dir, name)
+    if pred is not None:
+        tmp = cp.with_name(cp.name + ".tmp")
+        # %.17g: pandas' DEFAULT csv float formatting is NOT shortest-round-trip (measured
+        # 2026-09-09: 3.3333333333333335 -> 3.333333333333333), and a last-bit drift would
+        # fail the atol=0 pool-identity gate on mixed loaded/fresh preds. 17 significant
+        # digits round-trips every float64 exactly.
+        pred.to_csv(tmp, index=False, float_format="%.17g")
+        os.replace(tmp, cp)
+    tmp = jp.with_name(jp.name + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True, default=_jsonable))
+    os.replace(tmp, jp)
+
+
+def load_unit(part_dir: Path, name: str, with_pred: bool = True):
+    """One persisted unit back, or ``None`` if absent/torn/inconsistent (-> recompute)."""
+    jp, cp = _unit_paths(part_dir, name)
+    try:
+        payload = json.loads(jp.read_text())
+        pred = None
+        if with_pred:
+            # round_trip: the DEFAULT C parser is off by 1 ulp on some values (measured
+            # 2026-09-09 — the WRITE side was exact, the read side was not), which would
+            # fail the atol=0 pool-identity gate on mixed loaded/fresh preds
+            pred = pd.read_csv(cp, float_precision="round_trip")
+            for c in pred.columns:      # "0.0" prints as "0" -> int64; re-float all but the id
+                if c != "public_id":
+                    pred[c] = pred[c].astype(float)
+            if payload.get("n_rows") is not None and int(payload["n_rows"]) != len(pred):
+                return None
+        return payload, pred
+    except Exception:
+        return None
+
+
+def cached_unit(resume: bool, part_dir: Path, name: str, compute):
+    """``compute() -> (payload, pred)``; under ``resume`` a persisted unit is loaded instead
+    of recomputed, and a fresh result is persisted the moment it exists."""
+    if resume:
+        got = load_unit(part_dir, name)
+        if got is not None:
+            print(f"  # resume: {name} loaded from {Path(part_dir).name} (not recomputed)",
+                  flush=True)
+            return got
+    payload, pred = compute()
+    if resume:
+        save_unit(part_dir, name, payload, pred)
+    return payload, pred
 
 
 def dump_pred_frames(preds, seed: int, out_dir: Path):
@@ -69,7 +140,9 @@ def dump_pred_frames(preds, seed: int, out_dir: Path):
     written = []
     for rung, pred in preds.items():
         p = out_dir / f"pred_{rung}_seed{int(seed)}.csv"
-        pred.to_csv(p, index=False)
+        # %.17g + (on the consumer side) float_precision="round_trip": float64-exact through
+        # the file, so phase5_stratify's per-bin numbers equal an in-memory evaluation
+        pred.to_csv(p, index=False, float_format="%.17g")
         written.append(p)
     return written
 
@@ -87,6 +160,11 @@ def main() -> int:
     ap.add_argument("--dump-preds", action="store_true",
                     help="persist every rung's pred frame to grid/preds<grid-tag>/ "
                          "(Phase 5: enables torch-free stratification + curve work)")
+    ap.add_argument("--resume", action="store_true",
+                    help="persist each completed unit to grid/partial<grid-tag>/ and load "
+                         "persisted units instead of recomputing — for hosts that can die "
+                         "mid-run (the Phase-5 pod). Identical numbers by construction; a "
+                         "torn unit recomputes")
     ap.add_argument("--grid-tag", default="",
                     help="suffix for every output file (grid<tag>.json etc). The seed-split "
                          "route runs 3 single-seed jobs concurrently ([MIG-6], 2026-09-04) — "
@@ -112,6 +190,10 @@ def main() -> int:
             "eval_split": args.eval_split}
     preds_by_seed = {}          # seed -> {rung: pred DataFrame}
     inputs_by_seed = {}
+    part_dir = grid_dir(args) / f"partial{args.grid_tag}"
+
+    def cached_eval(name, compute):
+        return cached_unit(args.resume, part_dir, name, compute)
 
     for seed in args.seeds:
         inputs = load_variant_inputs(args, seed, C.RESC_TOKEN_BLOCKS,
@@ -121,36 +203,53 @@ def main() -> int:
         preds_by_seed[seed] = {}
 
         # --- B0: the frozen Phase-3 floor, plus the two zero-parameter rungs ------
-        b0 = evaluate_variant(rec_va, rec_va["score_max"].to_numpy(float), gt_va,
-                              f"B0_seed{seed}", n_boot=args.n_boot)
-        preds_by_seed[seed]["B0"] = b0["pred"]
-        spread = evaluate_variant(rec_va, b0_spread_probability(rec_va["score_max"].to_numpy(float)),
-                                  gt_va, f"B0spread_seed{seed}", n_boot=args.n_boot)
-        preds_by_seed[seed]["B0-spread"] = spread["pred"]
+        # B0 on the TRAIN pool rides in B0's unit — the REFERENCE for exit check 13. The train
+        # pool is a different, harder object than val (best-TP-not-rank-1 0.420 vs 0.286,
+        # [F.9] §2) and comes from weaker 80-volume fold detectors, so a positive
+        # val-minus-train gap is STRUCTURAL, not overfitting; only a rung's EXCESS over B0's
+        # own gap is evidence.
+        def _b0_unit():
+            b0 = evaluate_variant(rec_va, rec_va["score_max"].to_numpy(float), gt_va,
+                                  f"B0_seed{seed}", n_boot=args.n_boot)
+            b0_tr = evaluate_variant(inputs["rec_tr"],
+                                     inputs["rec_tr"]["score_max"].to_numpy(float),
+                                     inputs["gt_tr"], f"B0_train_seed{seed}", n_boot=0)
+            payload = {k: v for k, v in b0.items() if k != "pred"}
+            payload["train_cpm"] = b0_tr["cpm"]
+            payload["train_ceiling"] = b0_tr["ceiling"]
+            return payload, b0["pred"]
+
+        def _spread_unit():
+            r = evaluate_variant(rec_va,
+                                 b0_spread_probability(rec_va["score_max"].to_numpy(float)),
+                                 gt_va, f"B0spread_seed{seed}", n_boot=args.n_boot)
+            return {k: v for k, v in r.items() if k != "pred"}, r["pred"]
+
         # B0-rank — the REAL floor. Label-free, zero-parameter, deployable, and [I3.11]
         # measured it at 0.7889 +- 0.0209 against B0' 0.7062: a trained rung that clears B0
         # but not this has not earned its cost. Not in VARIANTS (nothing is trained) — it is
         # a scoring rule on the frozen pool, exactly like B0-spread.
-        rank = evaluate_variant(rec_va, b0_rank_probability(rec_va["score_max"].to_numpy(float),
-                                                            rec_va["public_id"].to_numpy()),
-                                gt_va, f"B0rank_seed{seed}", n_boot=args.n_boot)
-        preds_by_seed[seed]["B0-rank"] = rank["pred"]
-        # B0 on the TRAIN pool too — the REFERENCE for exit check 13. The train pool is a
-        # different, harder object than val (best-TP-not-rank-1 0.420 vs 0.286, [F.9] §2) and
-        # is generated by weaker 80-volume fold detectors, so a positive val-minus-train gap
-        # is STRUCTURAL, not overfitting. Only a rung's EXCESS over B0's own gap is evidence.
-        b0_tr = evaluate_variant(inputs["rec_tr"], inputs["rec_tr"]["score_max"].to_numpy(float),
-                                 inputs["gt_tr"], f"B0_train_seed{seed}", n_boot=0)
-        b0["train_cpm"] = b0_tr["cpm"]
-        b0["train_ceiling"] = b0_tr["ceiling"]
-        grid["per_seed"].setdefault(str(seed), {})["B0"] = {k: v for k, v in b0.items() if k != "pred"}
-        grid["per_seed"][str(seed)]["B0-spread"] = {k: v for k, v in spread.items() if k != "pred"}
-        grid["per_seed"][str(seed)]["B0-rank"] = {k: v for k, v in rank.items() if k != "pred"}
-        print(f"\n# seed {seed}: B0 CPM {b0['cpm']:.4f} [{b0['ci']['lo']:.4f}, {b0['ci']['hi']:.4f}], "
-              f"ceiling {b0['ceiling']:.4f}; B0-spread CPM {spread['cpm']:.4f} "
-              f"(grid artefact {spread['cpm'] - b0['cpm']:+.4f}); "
-              f"B0-rank CPM {rank['cpm']:.4f} ({rank['cpm'] - b0['cpm']:+.4f} vs B0); "
-              f"B0 train-pool CPM {b0_tr['cpm']:.4f} (val-train gap {b0['cpm'] - b0_tr['cpm']:+.4f})")
+        def _rank_unit():
+            r = evaluate_variant(rec_va,
+                                 b0_rank_probability(rec_va["score_max"].to_numpy(float),
+                                                     rec_va["public_id"].to_numpy()),
+                                 gt_va, f"B0rank_seed{seed}", n_boot=args.n_boot)
+            return {k: v for k, v in r.items() if k != "pred"}, r["pred"]
+
+        b0_p, preds_by_seed[seed]["B0"] = cached_eval(f"B0_seed{seed}", _b0_unit)
+        spread_p, preds_by_seed[seed]["B0-spread"] = cached_eval(f"B0-spread_seed{seed}",
+                                                                _spread_unit)
+        rank_p, preds_by_seed[seed]["B0-rank"] = cached_eval(f"B0-rank_seed{seed}", _rank_unit)
+        grid["per_seed"].setdefault(str(seed), {})["B0"] = b0_p
+        grid["per_seed"][str(seed)]["B0-spread"] = spread_p
+        grid["per_seed"][str(seed)]["B0-rank"] = rank_p
+        print(f"\n# seed {seed}: B0 CPM {b0_p['cpm']:.4f} [{b0_p['ci']['lo']:.4f}, "
+              f"{b0_p['ci']['hi']:.4f}], ceiling {b0_p['ceiling']:.4f}; "
+              f"B0-spread CPM {spread_p['cpm']:.4f} "
+              f"(grid artefact {spread_p['cpm'] - b0_p['cpm']:+.4f}); "
+              f"B0-rank CPM {rank_p['cpm']:.4f} ({rank_p['cpm'] - b0_p['cpm']:+.4f} vs B0); "
+              f"B0 train-pool CPM {b0_p['train_cpm']:.4f} "
+              f"(val-train gap {b0_p['cpm'] - b0_p['train_cpm']:+.4f})")
 
         # --- the trained rungs ---------------------------------------------------
         va_sets = set_index_lists(rec_va)
@@ -161,30 +260,37 @@ def main() -> int:
         tr_coord, tr_length = boxes_of(inputs["rec_tr"])
 
         for variant in args.variants:
-            model, rep = load_deployed_model(args, variant, seed, inputs["d_in"], args.device)
-            dep = rep["deployed"]
-            # reanchor: dep["dir"] is the TRAINING machine's absolute path (PHASE_5_SPEC §5.1)
-            trial_json = json.loads((reanchor(args, dep["dir"]) / "selection.json").read_text())
-            prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
-                              n_rows=len(rec_va), device=args.device)
-            res = evaluate_variant(rec_va, prob, gt_va, f"{variant}_seed{seed}", n_boot=args.n_boot)
-            preds_by_seed[seed][variant] = res["pred"]
+            # the WHOLE unit — model load, scoring passes and both evaluations — sits inside
+            # the closure, so a resumed rung touches neither torch nor the checkpoint files
+            def _rung_unit(variant=variant):
+                model, rep = load_deployed_model(args, variant, seed, inputs["d_in"],
+                                                 args.device)
+                dep = rep["deployed"]
+                # reanchor: dep["dir"] is the TRAINING machine's absolute path (SPEC §5.1)
+                trial_json = json.loads((reanchor(args, dep["dir"]) / "selection.json")
+                                        .read_text())
+                prob = score_pool(model, Zva32, va_coord, va_length, va_sets,
+                                  n_rows=len(rec_va), device=args.device)
+                res = evaluate_variant(rec_va, prob, gt_va, f"{variant}_seed{seed}",
+                                       n_boot=args.n_boot)
+                prob_tr = score_pool(model, Ztr32, tr_coord, tr_length, tr_sets,
+                                     n_rows=len(inputs["rec_tr"]), device=args.device)
+                # train-pool CPM is the overfitting WATCH (exit check 13), not a reported
+                # metric, so it carries no CI — Inv. 12 applies to the val/test numbers.
+                res_tr = evaluate_variant(inputs["rec_tr"], prob_tr, inputs["gt_tr"],
+                                          f"{variant}_train_seed{seed}", n_boot=0)
+                payload = {**{k: v for k, v in res.items() if k != "pred"},
+                           "train_cpm": res_tr["cpm"], "train_ceiling": res_tr["ceiling"],
+                           "deployed": {k: v for k, v in dep.items() if k != "dir"},
+                           "hyperparameters": trial_json.get("hyperparameters")}
+                return payload, res["pred"]
 
-            prob_tr = score_pool(model, Ztr32, tr_coord, tr_length, tr_sets,
-                                 n_rows=len(inputs["rec_tr"]), device=args.device)
-            # train-pool CPM is the overfitting WATCH (exit check 13), not a reported
-            # metric, so it carries no CI — Inv. 12 applies to the val/test numbers.
-            res_tr = evaluate_variant(inputs["rec_tr"], prob_tr, inputs["gt_tr"],
-                                      f"{variant}_train_seed{seed}", n_boot=0)
-            grid["per_seed"][str(seed)][variant] = {
-                **{k: v for k, v in res.items() if k != "pred"},
-                "train_cpm": res_tr["cpm"], "train_ceiling": res_tr["ceiling"],
-                "deployed": {k: v for k, v in dep.items() if k != "dir"},
-                "hyperparameters": trial_json.get("hyperparameters"),
-            }
-            print(f"  seed {seed} {variant:<5} {args.eval_split} CPM {res['cpm']:.4f} "
-                  f"[{res['ci']['lo']:.4f}, {res['ci']['hi']:.4f}]  ceiling {res['ceiling']:.4f}  "
-                  f"train CPM {res_tr['cpm']:.4f}")
+            payload, pred = cached_eval(f"rung_{variant}_seed{seed}", _rung_unit)
+            preds_by_seed[seed][variant] = pred
+            grid["per_seed"][str(seed)][variant] = payload
+            print(f"  seed {seed} {variant:<5} {args.eval_split} CPM {payload['cpm']:.4f} "
+                  f"[{payload['ci']['lo']:.4f}, {payload['ci']['hi']:.4f}]  "
+                  f"ceiling {payload['ceiling']:.4f}  train CPM {payload['train_cpm']:.4f}")
 
         if args.dump_preds:
             written = dump_pred_frames(preds_by_seed[seed], seed,
@@ -220,9 +326,17 @@ def main() -> int:
         print(f"  [{_label[(a, b)]}]")
         rows = []
         for seed in args.seeds:
-            cmpres = compare_variants(inputs_by_seed[seed]["gt_va"], preds_by_seed[seed][a],
-                                      preds_by_seed[seed][b], a, b,
-                                      n_boot=args.n_boot_compare, seed=0)
+            unit_name = f"cmp_{a}-{b}_seed{seed}"
+            got = load_unit(part_dir, unit_name, with_pred=False) if args.resume else None
+            if got is not None:
+                cmpres = got[0]
+                print(f"  # resume: {unit_name} loaded (not recomputed)", flush=True)
+            else:
+                cmpres = compare_variants(inputs_by_seed[seed]["gt_va"],
+                                          preds_by_seed[seed][a], preds_by_seed[seed][b],
+                                          a, b, n_boot=args.n_boot_compare, seed=0)
+                if args.resume:
+                    save_unit(part_dir, unit_name, cmpres)
             rows.append(cmpres)
             print(f"  seed {seed}  {a} - {b}: {cmpres['delta']:+.4f} "
                   f"[{cmpres['lo']:+.4f}, {cmpres['hi']:+.4f}]  "

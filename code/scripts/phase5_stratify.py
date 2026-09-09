@@ -162,7 +162,9 @@ def main() -> int:
         seed_out = {"edges": [e1, e2], "bin_of_volume": {str(k): v for k, v in bins.items()},
                     "rungs": {}}
         for rung in rungs:
-            pred = pd.read_csv(_find_pred(args.preds_dirs, rung, seed))
+            # round_trip: the default C parser is off by 1 ulp on some values (2026-09-09)
+            pred = pd.read_csv(_find_pred(args.preds_dirs, rung, seed),
+                               float_precision="round_trip")
             res = stratified_eval(pred, gt_ev, bins, n_boot=args.n_boot, tag=f"{rung}_s{seed}")
             seed_out["rungs"][rung] = res
             row = "  ".join(f"{b}: {res[b]['cpm']:.4f} [{res[b]['ci']['lo']:.4f}, "
