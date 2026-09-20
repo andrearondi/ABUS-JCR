@@ -33,12 +33,9 @@ OI = {  # Okabe-Ito, colour-blind safe
     "yellow": "#F0E442", "blue": "#0072B2", "vermilion": "#D55E00", "purple": "#CC79A7",
     "grey": "#7F7F7F",
 }
-RUNG_ORDER = ["B0", "B0-spread", "B0-rank", "B1", "B2", "A1", "A2", "FULL", "B1-P", "A2-P", "FULL-P"]
-RUNG_COLOUR = {
-    "B0": OI["black"], "B0-spread": OI["grey"], "B0-rank": OI["grey"],
-    "B1": OI["sky"], "B2": OI["blue"], "A1": OI["purple"], "A2": OI["green"], "FULL": OI["orange"],
-    "B1-P": OI["sky"], "A2-P": OI["green"], "FULL-P": OI["vermilion"],
-}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from abus_jcr.rescore.factor_grid import ARCH, DISPLAY, FACTOR_PAIRS, GRID, OBJ, OVERALL  # noqa: E402
+
 KEY_FP = [0.125, 0.25, 0.5, 1, 2, 4, 8]
 FULL_W, HALF_W = 6.2, 3.1
 
@@ -257,8 +254,8 @@ def fig_baseline_froc(evo: Path, out: Path):
 
 def fig_headroom(evo: Path, out: Path):
     q = load_json(evo / "maia_47_stage/phase3/baseline/calibration_quantisation_val.json")
-    rows = [("B0\n(detector\nscore)", "score_max"), ("bound of any\nmonotone\nrescaling", "global_monotone"),
-            ("B0-rank\n(label-free)", "volume_neutral_anchored"), ("per-volume\noracle", "per_vol_oracle")]
+    rows = [("detector\nscore", "score_max"), ("bound of any\nmonotone\nrescaling", "global_monotone"),
+            ("rank rule\n(label-free)", "volume_neutral_anchored"), ("per-volume\noracle", "per_vol_oracle")]
     vals = {k: [s[k]["cpm"] for s in q["per_seed"]] for _, k in rows}
     ceil = [s["score_max"]["ceiling"] for s in q["per_seed"]]
     fig, ax = plt.subplots(figsize=(HALF_W * 1.6, 2.6))
@@ -364,7 +361,7 @@ def fig_objective_study(evo: Path, out: Path):
         ax.plot(r["raw"]["balacc"], r["raw"]["cpm"], mk, color=fam_col[fam], ms=5, mfc="none" if r["soft"] else fam_col[fam])
     b0 = o["b0"]
     ax.plot(b0["balacc"], b0["cpm"], "*", color=OI["black"], ms=11, zorder=5)
-    ax.annotate("B0 (detector score)", (b0["balacc"], b0["cpm"]), xytext=(8, -2), textcoords="offset points",
+    ax.annotate("detector score", (b0["balacc"], b0["cpm"]), xytext=(8, -2), textcoords="offset points",
                 ha="left", va="top", fontsize=8)
     ax.set_ylim(0.53, 0.74)
     ax.set_xlim(0.77, 0.90)
@@ -382,164 +379,369 @@ def fig_objective_study(evo: Path, out: Path):
     save(fig, out, "objective_study")
 
 
-# ----------------------------------------------------------------------------- Ch5
-def fig_ladder(evo: Path, out: Path, split: str):
+# ----------------------------------------------------------------------------- Ch7: the factor grid
+# One encoding in every figure: ARCHITECTURE is the colour, OBJECTIVE is the marker and the line
+# weight; the two reference rows are black dotted (detector score) and grey dashed (rank rule).
+ARCH_COLOUR = {"Independent": OI["blue"], "Joint": OI["orange"], "Joint+Geo": OI["green"]}
+OBJ_MARK = {"CE": dict(marker="o", mfc="white", lw=1.0), "pooled": dict(marker="D", lw=1.9)}
+REF_STYLE = {"B0": dict(color=OI["black"], ls=":", lw=1.1), "B0-rank": dict(color=OI["grey"], ls="--", lw=1.1)}
+FACTOR_COLOUR = {"jointness": OI["blue"], "geometry": OI["green"], "objective": OI["vermilion"],
+                 "overall": OI["black"]}
+CEIL_STYLE = dict(color=OI["black"], lw=0.6, ls="-.")
+
+
+def _style(cid):
+    (arch, obj), = [k for k, v in GRID.items() if v == cid]
+    return dict(color=ARCH_COLOUR[arch], ms=4.5, **OBJ_MARK[obj])
+
+
+def _factor_json(evo: Path):
+    d = evo / "maia_47_stage/phase5/grid"
+    for name in ("factor_comparisons_TEST.json", "factor_comparisons_TEST_laptop.json"):
+        if (d / name).exists():
+            return load_json(d / name)
+    print(f"[skip] no factor_comparisons_TEST*.json in {d}")
+    return None
+
+
+def _seed_mean_recall(g, rung):
+    seeds = sorted(g["per_seed"])
+    return [float(np.mean([g["per_seed"][s][rung]["key_recall"][str(k)] for s in seeds])) for k in KEY_FP]
+
+
+def fig_grid(evo: Path, out: Path, split: str):
+    """The 2x3 grid: objective on the x axis, one line per architecture, seeds as markers."""
     g = _grid(evo, split)
     if g is None:
         return
-    rungs = [r for r in RUNG_ORDER if r in g["per_rung"]]
-    fig, ax = plt.subplots(figsize=(FULL_W, 2.8))
-    x = np.arange(len(rungs))
-    for i, r in enumerate(rungs):
-        pr = g["per_rung"][r]
-        seeds = pr["per_seed_cpm"]
-        ax.plot([i] * len(seeds), seeds, "o", color=RUNG_COLOUR[r], ms=4, alpha=0.6)
-        ax.plot([i - 0.25, i + 0.25], [pr["cpm_mean"]] * 2, color=RUNG_COLOUR[r], lw=2.5)
-    for key, lab, c, ls in [("B0", "B0", OI["black"], ":"), ("B0-rank", "B0-rank", OI["grey"], "--")]:
-        if key in g["per_rung"]:
-            ax.axhline(g["per_rung"][key]["cpm_mean"], color=c, lw=0.8, ls=ls)
-    ax.axhline(g["per_rung"]["B0"]["ceiling_mean"], color=OI["green"], lw=0.8, ls="--")
-    ax.text(len(rungs) - 0.6, g["per_rung"]["B0"]["ceiling_mean"] + 0.005, "recall ceiling", ha="right",
-            va="bottom", fontsize=8, color=OI["green"])
-    for xx in [2.5, 7.5]:
-        ax.axvline(xx, color=OI["grey"], lw=0.5)
-    ax.set_xticks(x)
-    ax.set_xticklabels(rungs, rotation=25, ha="right")
-    ax.set_ylabel(f"{split} CPM")
-    ax.set_ylim(0.6, 1.0)
-    save(fig, out, "ladder" if split == "val" else "ladder_test")
+    fig, ax = plt.subplots(figsize=(HALF_W * 1.75, 2.9))
+    off = {"Independent": -0.07, "Joint": 0.0, "Joint+Geo": 0.07}
+    for arch in ARCH:
+        xs = [i + off[arch] for i in range(len(OBJ))]
+        means = [g["per_rung"][GRID[(arch, o)]]["cpm_mean"] for o in OBJ]
+        ax.plot(xs, means, color=ARCH_COLOUR[arch], lw=1.4, zorder=2, label=arch)
+        for x, o in zip(xs, OBJ):
+            seeds = g["per_rung"][GRID[(arch, o)]]["per_seed_cpm"]
+            ax.plot([x] * len(seeds), seeds, ls="", marker=OBJ_MARK[o]["marker"], ms=3.5,
+                    color=ARCH_COLOUR[arch], mfc="white", alpha=0.75, zorder=3)
+            ax.plot(x, np.mean(seeds), ls="", marker=OBJ_MARK[o]["marker"], ms=6.5,
+                    color=ARCH_COLOUR[arch], zorder=4)
+    for key, lab in (("B0", "detector score"), ("B0-rank", "rank rule")):
+        m = g["per_rung"][key]["cpm_mean"]
+        ax.axhline(m, **REF_STYLE[key], zorder=1)
+        ax.text(len(OBJ) - 0.62, m + 0.004, lab, fontsize=7.5, color=REF_STYLE[key]["color"], ha="left", va="bottom")
+    ceil = g["per_rung"]["B0"]["ceiling_mean"]
+    ax.axhline(ceil, **CEIL_STYLE)
+    ax.text(len(OBJ) - 0.62, ceil + 0.004, "recall ceiling", fontsize=7.5, ha="left", va="bottom")
+    ax.set_xticks(range(len(OBJ)))
+    ax.set_xticklabels(["CE", "pooled"])
+    ax.set_xlim(-0.4, len(OBJ) - 0.05)
+    ax.set_xlabel("training objective")
+    ax.set_ylabel(f"{'validation' if split == 'val' else 'test'} CPM")
+    lo = min(g["per_rung"][k]["cpm_mean"] for k in ("B0",)) - 0.05
+    ax.set_ylim(round(lo, 2), ceil + 0.04)
+    ax.legend(loc="center left", bbox_to_anchor=(0.66, 0.62), fontsize=7.5, title="architecture",
+              title_fontsize=7.5)
+    save(fig, out, f"grid_{split}")
 
 
-def fig_froc_ladder(evo: Path, out: Path, split: str):
+def fig_froc(evo: Path, out: Path, split: str):
     g = _grid(evo, split)
     if g is None:
         return
-    show = ["B0", "B0-rank", "B1", "B2", "A2", "FULL", "B1-P", "FULL-P"]
     seed = sorted(g["per_seed"])[0]
     fig, ax = plt.subplots(figsize=(HALF_W * 1.7, 2.8))
-    for r in show:
-        if r not in g["per_seed"][seed]:
-            continue
+    for r in ["B0", "B0-rank", "A1", "FULL-P"]:
         d = g["per_seed"][seed][r]
         fp, rc = np.array(d["fp"]), np.array(d["recall"])
         o = np.argsort(fp)
-        ls = "--" if r in ("B0", "B0-rank") else "-"
-        lw = 1.8 if r.endswith("-P") else 1.1
-        ax.step(fp[o], rc[o], where="post", color=RUNG_COLOUR[r], lw=lw, ls=ls, label=r)
-    ax.axhline(g["per_seed"][seed]["B0"]["ceiling"], color=OI["green"], lw=0.6, ls="--")
+        if r in REF_STYLE:
+            kw = dict(REF_STYLE[r])
+        else:
+            st = _style(r)
+            kw = dict(color=st["color"], lw=st["lw"], ls="-")
+        ax.step(fp[o], rc[o], where="post", label=DISPLAY[r].replace("Detector", "detector score").replace("Rank rule", "rank rule"), **kw)
+    ax.axhline(g["per_seed"][seed]["B0"]["ceiling"], **CEIL_STYLE)
     _froc_axes(ax)
-    ax.set_ylim(0.4, 1.0)
-    ax.legend(loc="lower right", ncol=2, fontsize=7)
-    save(fig, out, "froc_ladder" if split == "val" else "froc_ladder_test")
+    ax.set_ylim(0.3 if split == "test" else 0.4, 1.0)
+    ax.legend(loc="lower right", fontsize=7)
+    save(fig, out, f"froc_{split}")
 
 
 def fig_per_rate(evo: Path, out: Path, split: str):
+    """Left: sensitivity per rate (seed mean) of the references and the complete module.
+    Right: what the pooled objective adds per rate, at each architecture, per seed."""
     g = _grid(evo, split)
     if g is None:
         return
-    show = ["B0", "B0-rank", "B1", "B2", "A2", "FULL", "B1-P", "A2-P", "FULL-P"]
     fig, axes = plt.subplots(1, 2, figsize=(FULL_W, 2.6))
     ax = axes[0]
-    for r in show:
-        if r not in g["per_rung"]:
-            continue
-        kr = g["per_rung"][r]["key_recall"]
-        ax.plot(KEY_FP, [kr[str(k)] for k in KEY_FP], marker="o", ms=3, lw=1.6 if r.endswith("-P") else 1.0,
-                ls="--" if r in ("B0", "B0-rank") else "-", color=RUNG_COLOUR[r], label=r)
-    ax.set_xscale("log")
-    ax.set_xticks(KEY_FP)
-    ax.set_xticklabels([str(k) for k in KEY_FP])
+    for r, lab in (("B0", "detector score"), ("B0-rank", "rank rule")):
+        ax.plot(KEY_FP, _seed_mean_recall(g, r), marker="o", ms=2.5, label=lab, **REF_STYLE[r])
+    for r in ("A1", "FULL-P"):
+        ax.plot(KEY_FP, _seed_mean_recall(g, r), label=DISPLAY[r], ls="-", **_style(r))
+    ax.set_xscale("log"); ax.set_xticks(KEY_FP); ax.set_xticklabels([str(k) for k in KEY_FP])
     ax.set_xlabel("false positives per volume")
-    ax.set_ylabel("mean sensitivity over seeds")
-    h, l = ax.get_legend_handles_labels()
-    fig.legend(h, l, ncol=5, fontsize=7, loc="lower center", bbox_to_anchor=(0.5, -0.06))
+    ax.set_ylabel("sensitivity, mean over seeds")
+    ax.legend(fontsize=7, loc="lower right")
     ax = axes[1]
-    pairs = [("FULL-P", "FULL", OI["vermilion"]), ("B1-P", "B1", OI["sky"]), ("A2-P", "A2", OI["green"])]
-    for a, b, c in pairs:
-        for seed in sorted(g["per_seed"]):
-            if a not in g["per_seed"][seed] or b not in g["per_seed"][seed]:
-                continue
-            ka, kb = g["per_seed"][seed][a]["key_recall"], g["per_seed"][seed][b]["key_recall"]
-            ax.plot(KEY_FP, [ka[str(k)] - kb[str(k)] for k in KEY_FP], "o-", ms=2.5, lw=0.9, color=c, alpha=0.8,
-                    label=f"{a} − {b}" if seed == sorted(g["per_seed"])[0] else None)
+    seeds = sorted(g["per_seed"])
+    for p in [q for q in FACTOR_PAIRS if q["factor"] == "objective"]:
+        c = ARCH_COLOUR[p["held"]]
+        per_seed = np.array([[g["per_seed"][s][p["a"]]["key_recall"][str(k)]
+                              - g["per_seed"][s][p["b"]]["key_recall"][str(k)] for k in KEY_FP] for s in seeds])
+        for row in per_seed:
+            ax.plot(KEY_FP, row, color=c, lw=0.6, alpha=0.45)
+        ax.plot(KEY_FP, per_seed.mean(0), color=c, lw=1.8, marker="D", ms=3.5, label=p["held"])
     ax.axhline(0, color="black", lw=0.6)
-    ax.set_xscale("log")
-    ax.set_xticks(KEY_FP)
-    ax.set_xticklabels([str(k) for k in KEY_FP])
+    ax.set_xscale("log"); ax.set_xticks(KEY_FP); ax.set_xticklabels([str(k) for k in KEY_FP])
     ax.set_xlabel("false positives per volume")
-    ax.set_ylabel("gain from the pooled objective")
-    ax.legend(fontsize=7, loc="upper right")
-    fig.tight_layout(w_pad=1.5, rect=(0, 0.04, 1, 1))
-    save(fig, out, "per_rate" if split == "val" else "per_rate_test")
+    ax.set_ylabel("sensitivity gain, pooled $-$ CE")
+    ax.legend(fontsize=7, loc="upper right", title="architecture", title_fontsize=7)
+    fig.tight_layout(w_pad=1.5)
+    save(fig, out, f"per_rate_{split}")
 
 
-PRE_REG = ["FULL-B2", "A1-B2", "A2-B2", "B2-B1", "B1-B0", "FULL-A1"]
-ADDED = ["FULL-P-B2", "FULL-P-FULL", "A2-P-A2", "FULL-P-B1-P", "FULL-B0-rank", "FULL-P-B0-rank", "B2-B0-rank"]
-
-
-def _pretty(c):
-    for a in ["FULL-P", "B0-rank", "B1-P", "A2-P"]:
-        c = c.replace(a, a.replace("-", "§"))
-    a, b = c.split("-", 1)
-    return f"{a} − {b}".replace("§", "-")
-
-
-def fig_comparisons(evo: Path, out: Path, split: str):
-    g = _grid(evo, split)
-    if g is None:
+def fig_factor_pairs(evo: Path, out: Path):
+    """The seven one-switch pairs and the overall pair: one interval per seed replica."""
+    rep = _factor_json(evo)
+    if rep is None:
         return
-    comps = [c for c in PRE_REG if c in g["comparisons"]] + [c for c in ADDED if c in g["comparisons"]]
-    fig, ax = plt.subplots(figsize=(FULL_W, 3.6))
-    y = 0
-    ticks, labels = [], []
-    seed_cols = [OI["blue"], OI["green"], OI["orange"]]
-    for i, c in enumerate(comps):
-        if c == ADDED[0] and any(k in g["comparisons"] for k in PRE_REG):
-            ax.axhline(y - 0.5, color=OI["grey"], lw=0.6)
-            ax.text(-0.295, y - 0.42, "added after the substrate measurement", fontsize=7,
-                    color=OI["grey"], ha="left", va="top")
-            ax.text(0.195, -0.42, "pre-registered", fontsize=7, color=OI["grey"], ha="right", va="top")
-        ps = g["comparisons"][c]["per_seed"]
-        for j, p in enumerate(ps):
-            yy = y + (j - 1) * 0.22
-            ax.plot([p["lo"], p["hi"]], [yy, yy], color=seed_cols[j], lw=1.2)
-            ax.plot(p["delta"], yy, "o", color=seed_cols[j], ms=3.5)
-        ticks.append(y)
-        labels.append(_pretty(c))
-        y += 1
+    blocks = [("jointness", "H1  joint processing: Joint $-$ Independent"),
+              ("geometry", "H2  relative geometry: Joint+Geo $-$ Joint"),
+              ("objective", "H3  objective: pooled $-$ CE"),
+              ("overall", "overall: Joint+Geo/pooled $-$ detector score")]
+    held_label = {"CE": "under CE", "pooled": "under pooled", "-": "", "Independent": "Independent",
+                  "Joint": "Joint", "Joint+Geo": "Joint+Geo"}
+    fig, ax = plt.subplots(figsize=(FULL_W, 3.7))
+    y, ticks, labels = 0.0, [], []
+    for factor, title in blocks:
+        rows = [p for p in rep["pairs"] if p["factor"] == factor]
+        if not rows:
+            continue
+        ax.text(-0.205, y - 0.15, title, fontsize=8, fontweight="bold", ha="left", va="center",
+                color=FACTOR_COLOUR[factor])
+        y += 0.75
+        for p in rows:
+            for j, r in enumerate(sorted(p["per_seed"], key=lambda r: r["seed"])):
+                yy = y + (j - 1) * 0.23
+                ax.plot([r["lo"], r["hi"]], [yy, yy], color=FACTOR_COLOUR[factor], lw=1.3,
+                        alpha=0.55 + 0.2 * j)
+                ax.plot(r["delta"], yy, "o", ms=4, color=FACTOR_COLOUR[factor],
+                        mfc=FACTOR_COLOUR[factor] if r["directional"] else "white")
+            ticks.append(y)
+            labels.append(held_label[p["held"]] if factor != "overall" else "")
+            y += 1.0
+        y += 0.35
     ax.axvline(0, color="black", lw=0.7)
-    ax.set_yticks(ticks)
-    ax.set_yticklabels(labels)
-    ax.set_ylim(len(comps) - 0.5, -0.9)
-    ax.set_xlabel(f"paired difference in {split} CPM (95 % volume bootstrap, per seed)")
-    ax.set_xlim(-0.3, 0.2)
-    from matplotlib.lines import Line2D
-    ax.legend(handles=[Line2D([], [], color=c, marker="o", ms=3.5, label=f"seed {i}") for i, c in enumerate(seed_cols)],
-              loc="lower left", fontsize=7)
-    save(fig, out, "comparisons" if split == "val" else "comparisons_test")
+    ax.set_yticks(ticks); ax.set_yticklabels(labels)
+    ax.set_ylim(y - 0.6, -0.7)
+    ax.set_xlim(-0.21, 0.21)
+    ax.set_xlabel("paired difference in test CPM (95 % bootstrap over volumes; seeds 0, 1, 2 from top to bottom)")
+    save(fig, out, "factor_pairs_test")
 
 
 def fig_lambda0(evo: Path, out: Path):
     d = load_json(evo / "maia_47_stage/phase4/grid/sub_ablations_lam0.json")["lambda0_diagnostics"]
     g = _grid(evo, "val")
-    fig, ax = plt.subplots(figsize=(HALF_W * 1.4, 2.5))
+    fig, ax = plt.subplots(figsize=(HALF_W * 1.5, 2.6))
     variants = ["A2", "FULL", "FULL-P"]
+    cols = [OI["orange"], OI["green"], OI["green"]]
     x = np.arange(len(variants))
-    for i, v in enumerate(variants):
+    for i, (v, c) in enumerate(zip(variants, cols)):
         lam0 = [r["val_cpm"] for r in d if r["variant"] == v]
         full = g["per_rung"][v]["per_seed_cpm"]
-        ax.bar(i - 0.2, np.mean(full), width=0.38, color=RUNG_COLOUR[v], alpha=0.9, label="λ swept" if i == 0 else None)
-        ax.bar(i + 0.2, np.mean(lam0), width=0.38, color=RUNG_COLOUR[v], alpha=0.35, hatch="//", label="λ = 0" if i == 0 else None)
+        ax.bar(i - 0.2, np.mean(full), width=0.38, color=c, alpha=0.9, label="λ swept" if i == 0 else None)
+        ax.bar(i + 0.2, np.mean(lam0), width=0.38, color=c, alpha=0.35, hatch="//", label="λ = 0" if i == 0 else None)
         ax.plot([i - 0.2] * 3, full, "o", color="white", mec="black", ms=3.5, zorder=5)
         ax.plot([i + 0.2] * 3, lam0, "o", color="white", mec="black", ms=3.5, zorder=5)
     ax.axhline(g["per_rung"]["B2"]["cpm_mean"], color=OI["grey"], lw=0.8, ls="--")
-    ax.text(2.45, g["per_rung"]["B2"]["cpm_mean"] + 0.01, "B2", fontsize=8, color=OI["grey"], ha="right")
+    ax.text(2.45, g["per_rung"]["B2"]["cpm_mean"] + 0.01, DISPLAY["B2"], fontsize=7.5, color=OI["grey"], ha="right")
     ax.set_xticks(x)
-    ax.set_xticklabels(variants)
+    ax.set_xticklabels([DISPLAY[v].replace("/", "/\n") for v in variants], fontsize=7.5)
     ax.set_ylabel("validation CPM")
     ax.set_ylim(0, 0.95)
     ax.legend(loc="upper center", fontsize=7, ncol=2, bbox_to_anchor=(0.5, 1.12))
     save(fig, out, "lambda0")
+
+
+def fig_strata(evo: Path, out: Path):
+    """Set-size bins for {Independent, Joint} x {CE, pooled}: where would attention help?"""
+    s = load_json(evo / "maia_47_stage/phase5/grid/stratified_TEST.json")
+    show = ["B1", "B2", "B1-P", "A2-P"]
+    bins = ["low", "mid", "high"]
+    fig, axes = plt.subplots(1, 3, figsize=(FULL_W, 2.6), sharey=True)
+    for ax, seed in zip(axes, sorted(s["per_seed"])):
+        ps = s["per_seed"][seed]
+        n = {b: sum(1 for v in ps["bin_of_volume"].values() if v == b) for b in bins}
+        x = np.arange(3)
+        for r in show:
+            ax.plot(x, [ps["rungs"][r][b]["cpm"] for b in bins], ls="-", label=DISPLAY[r], **_style(r))
+        ax.plot(x, [ps["rungs"]["B0"][b]["ceiling"] for b in bins], label="recall ceiling", **CEIL_STYLE)
+        e = ps["edges"]
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"$\\leq${e[0]:.0f}\n(n={n['low']})", f"{e[0]:.0f}–{e[1]:.0f}\n(n={n['mid']})", f">{e[1]:.0f}\n(n={n['high']})"], fontsize=7.5)
+        ax.set_title(f"seed {seed}", fontsize=8)
+        ax.set_xlabel("candidates in the set", fontsize=8)
+    axes[0].set_ylabel("test CPM in bin")
+    h, l = axes[0].get_legend_handles_labels()
+    fig.legend(h, l, ncol=5, fontsize=7, loc="lower center", bbox_to_anchor=(0.5, -0.06))
+    fig.tight_layout(w_pad=1.0, rect=(0, 0.05, 1, 1))
+    save(fig, out, "strata_test")
+
+
+def fig_val_vs_test(evo: Path, out: Path):
+    """Every reported pair, validation against test. Differences are exact CPM differences
+    (mean and spread over the three seed replicas), so validation needs no stored comparison."""
+    gv = _grid(evo, "val"); gt = _grid(evo, "test")
+    if gv is None or gt is None:
+        return
+    held_short = {"CE": "CE", "pooled": "pooled", "Independent": "Ind.", "Joint": "Joint", "Joint+Geo": "J+Geo", "-": ""}
+    fig, ax = plt.subplots(figsize=(HALF_W * 1.7, 3.3))
+    for p in tuple(FACTOR_PAIRS) + (OVERALL,):
+        d = {}
+        for name, g in (("val", gv), ("test", gt)):
+            v = np.array(g["per_rung"][p["a"]]["per_seed_cpm"]) - np.array(g["per_rung"][p["b"]]["per_seed_cpm"])
+            d[name] = (v.mean(), v.std())
+        c = FACTOR_COLOUR[p["factor"]]
+        ax.errorbar(d["val"][0], d["test"][0], xerr=d["val"][1], yerr=d["test"][1], fmt="o", ms=4, color=c,
+                    elinewidth=0.8, capsize=0)
+        if p["factor"] != "overall":
+            ax.annotate(held_short[p["held"]], (d["val"][0], d["test"][0]), xytext=(4, 3),
+                        textcoords="offset points", fontsize=6.5, color=c)
+    lim = (-0.08, 0.15)
+    ax.plot(lim, lim, color=OI["grey"], lw=0.6, ls=":")
+    ax.axhline(0, color="black", lw=0.5); ax.axvline(0, color="black", lw=0.5)
+    ax.set_xlim(lim); ax.set_ylim(lim)
+    ax.set_xlabel("validation: difference in CPM (mean $\\pm$ std over seeds)")
+    ax.set_ylabel("test: difference in CPM")
+    from matplotlib.lines import Line2D
+    names = {"jointness": "H1 jointness", "geometry": "H2 geometry", "objective": "H3 objective", "overall": "overall"}
+    ax.legend(handles=[Line2D([], [], marker="o", ls="", color=FACTOR_COLOUR[k], label=v) for k, v in names.items()],
+              loc="upper left", fontsize=7)
+    save(fig, out, "val_vs_test")
+
+
+# ----------------------------------------------------------------------------- artifact audit (2026-09-15)
+AUDIT_CACHE = "outputs_iso/phase1/cache/3f94f17f04055ffa8f5a6c7b33495d64d630112b98bdc31e32f1b5b258e88830"
+AUDIT_DIR = "outputs_iso/phase3/artifact_audit"
+# The four walkthrough candidates of the audit section (validation pool, picked as the top-scoring
+# member of their class; see results/RESULTS_ARTIFACT_AUDIT.md). Row index into signatures_val.csv.
+AUDIT_EXEMPLARS = [
+    ("full_seed0", 103, "neg", "narrow_column", "column-shaped FP"),
+    ("full_seed2", 118, "neg", "bounded_blob", "look-alike FP"),
+    ("full_seed0", 103, "pos", "bounded_blob", "lesion, bounded"),
+    ("full_seed0", 111, "pos", "shadowing_blob", "lesion, shadowing"),
+]
+MECH_GROUPS = [
+    ("column shadow", ["narrow_column", "broad_column"]),
+    ("position", ["skin", "marginal", "deep", "reverberation"]),
+    ("shadowing blob", ["shadowing_blob"]),
+    ("bounded blob", ["bounded_blob"]),
+    ("other", ["other"]),
+]
+
+
+def fig_audit_mechanisms(evo: Path, out: Path):
+    """Four candidates and their beam-line profiles: what the mechanism labels mean."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from abus_jcr.probe import artifact_audit as AA
+    sig = pd.read_csv(evo / AUDIT_DIR / "signatures_val.csv")
+    knobs = AA.Knobs()
+    iso = knobs.iso_mm
+    fig, axes = plt.subplots(2, len(AUDIT_EXEMPLARS), figsize=(FULL_W, 3.9),
+                             gridspec_kw={"height_ratios": [1.25, 1]})
+    for j, (det, vid, lab, mech, title) in enumerate(AUDIT_EXEMPLARS):
+        rows = sig[(sig.detector_of_origin == det) & (sig.public_id == vid) & (sig.label == lab) & (sig.mechanism == mech)]
+        r = rows.sort_values("score_max", ascending=False).iloc[0]
+        vol = np.load(evo / AUDIT_CACHE / "vol" / f"VOL_{vid}.npy", mmap_mode="r")
+        D0, D1, D2 = vol.shape
+        c = [r.cen_d0, r.cen_d1, r.cen_d2]; e = [r.ext_d0, r.ext_d1, r.ext_d2]
+        bp = AA.beam_profile(vol, c, e, knobs)
+        z = int(round(c[2]))
+        frame = np.asarray(vol[:, :, z]).T                      # rows = depth, cols = lateral
+        half = 90
+        x0, x1 = int(max(0, c[0] - half)), int(min(D0, c[0] + half))
+        ax = axes[0, j]
+        ax.imshow(frame[:, x0:x1], cmap="gray", vmin=0, vmax=0.8, aspect="equal",
+                  extent=[0, (x1 - x0) * iso, D1 * iso, 0])
+        col = OI["blue"] if lab == "pos" else OI["vermilion"]
+        ax.add_patch(plt.Rectangle(((c[0] - e[0] / 2 - x0) * iso, (c[1] - e[1] / 2) * iso), e[0] * iso, e[1] * iso,
+                                   fill=False, ec=col, lw=1.2))
+        w = bp["l1"] - bp["l0"]; off = int(round(e[0] / 2 + w / 2 + round(knobs.flank_gap_mm / iso)))
+        for a in (bp["l0"] - off, bp["l0"] + off):
+            ax.add_patch(plt.Rectangle(((a - x0) * iso, 0), w * iso, D1 * iso, fill=False, ec=OI["yellow"], lw=0.7, ls="--"))
+        ax.add_patch(plt.Rectangle(((bp["l0"] - x0) * iso, 0), w * iso, D1 * iso, fill=False, ec="white", lw=0.7, ls="--"))
+        ax.set_title(title, fontsize=8)
+        ax.set_xticks([]); ax.set_ylabel("depth (mm)" if j == 0 else ""); ax.tick_params(labelsize=7)
+        if j > 0:
+            ax.set_yticks([])
+        ax = axes[1, j]
+        d = np.arange(D1) * iso
+        ax.plot(d, bp["col"], color=OI["black"], lw=1.0, label="column")
+        ax.plot(d, bp["flank"], color=OI["orange"], lw=1.0, label="flanks")
+        ax.plot(d, bp["contrast"], color=OI["green"], lw=1.0, label="contrast")
+        ax.axvspan(bp["top"] * iso, bp["bot"] * iso, color=col, alpha=0.15)
+        ax.axhline(-knobs.tau, color=OI["grey"], lw=0.7, ls="--")
+        ax.set_xlabel("depth (mm)")
+        ax.set_ylim(-0.35, 0.75); ax.set_xlim(0, 48)
+        ax.text(0.97, 0.95, f"below {r.shadow_run_mm:.0f} mm\nabove {r.run_above_mm:.1f} mm\nstripe {r.stripe_width_mm:.1f} mm",
+                transform=ax.transAxes, ha="right", va="top", fontsize=6.5)
+        if j == 0:
+            ax.set_ylabel("intensity")
+            ax.legend(loc="lower left", bbox_to_anchor=(0.0, 0.0), fontsize=6, handlelength=1.2)
+        else:
+            ax.set_yticks([])
+        print(f"  exemplar {title}: vol {vid} {det} score {r.score_max:.2f} diag {r.diag_mm:.1f} mm")
+    fig.tight_layout(w_pad=0.6, h_pad=0.6)
+    save(fig, out, "audit_mechanisms")
+
+
+def fig_audit_partition(evo: Path, out: Path):
+    """Left: mechanism partition (grouped) FP vs TP on both pools. Right: metric change when each class is demoted."""
+    part = {sp: pd.DataFrame(load_json(evo / AUDIT_DIR / f"artifact_audit_{sp}.json")["partition"]) for sp in ("val", "train")}
+    rules = {sp: pd.DataFrame(load_json(evo / AUDIT_DIR / f"artifact_audit_rules_{sp}.json")["interventions"]) for sp in ("val", "train")}
+    fig, axes = plt.subplots(1, 2, figsize=(FULL_W, 2.7), gridspec_kw={"width_ratios": [1.1, 1]})
+    ax = axes[0]
+    bars = [("val", "neg"), ("val", "pos"), ("train", "neg"), ("train", "pos")]
+    names = ["val.\nFP", "val.\nTP", "train\nFP", "train\nTP"]
+    gcol = [OI["vermilion"], OI["orange"], OI["purple"], OI["sky"], OI["grey"]]
+    for i, (sp, lab) in enumerate(bars):
+        p = part[sp][part[sp]["label"] == lab]
+        per_det = p.pivot_table(index="detector", columns="mechanism", values="frac_pooled", fill_value=0.0)
+        base = 0.0
+        for gi, (gname, members) in enumerate(MECH_GROUPS):
+            v = float(per_det[[m for m in members if m in per_det]].sum(axis=1).mean())
+            ax.bar(i, v, bottom=base, color=gcol[gi], width=0.7, label=gname if i == 0 else None)
+            if v > 0.06:
+                ax.text(i, base + v / 2, f"{100 * v:.0f}", ha="center", va="center", fontsize=7, color="white" if gi != 4 else "black")
+            base += v
+        print(f"  partition {sp} {lab}: " + ", ".join(f"{g}={100 * float(per_det[[m for m in mm if m in per_det]].sum(axis=1).mean()):.1f}%" for g, mm in MECH_GROUPS))
+    ax.set_xticks(range(4)); ax.set_xticklabels(names, fontsize=7)
+    ax.set_ylabel("fraction of candidates"); ax.set_ylim(0, 1.0)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.02), fontsize=6.5, handlelength=1.0)
+    ax = axes[1]
+    classes = [("column shadow", "demote narrow+broad column"), ("skin", "demote skin"), ("marginal", "demote marginal"),
+               ("reverberation", "demote reverberation"), ("shadowing blob", "demote shadowing_blob"),
+               ("bounded blob", "demote bounded_blob"), ("other", "demote other")]
+    x = np.arange(len(classes))
+    tr = rules["train"]
+    ax.bar(x, [float(tr[tr["rule"] == r]["delta"].iloc[0]) if (tr["rule"] == r).any() else 0.0 for _, r in classes],
+           color=OI["grey"], width=0.6, label="training pool")
+    va = rules["val"]
+    for k, (_, r) in enumerate(classes):
+        d = va[va["rule"] == r]["delta"].to_numpy(float)
+        ax.plot(np.full(len(d), k) + np.linspace(-0.12, 0.12, len(d)), d, "o", color=OI["blue"], ms=3.5,
+                label="validation, three seeds" if k == 0 else None)
+    ax.axhline(0, color="black", lw=0.6)
+    ax.set_xticks(x); ax.set_xticklabels([c for c, _ in classes], rotation=35, ha="right", fontsize=7)
+    ax.set_ylabel("metric change, class demoted")
+    ax.legend(loc="lower left", fontsize=6.5)
+    fig.tight_layout(w_pad=2.5)
+    save(fig, out, "audit_partition")
+    for sp in ("val", "train"):
+        print(f"  interventions {sp}:")
+        print(rules[sp][["detector", "rule", "n_fp", "n_tp", "delta"]].to_string(index=False))
 
 
 # ----------------------------------------------------------------------------- main
@@ -566,20 +768,21 @@ def main(argv=None):
             "baseline_froc": lambda: fig_baseline_froc(a.evo, a.out),
             "headroom": lambda: fig_headroom(a.evo, a.out),
             "audit_elongation": lambda: fig_audit_elongation(a.evo, a.out),
+            "audit_mechanisms": lambda: fig_audit_mechanisms(a.evo, a.out),
+            "audit_partition": lambda: fig_audit_partition(a.evo, a.out),
             "pool_priors": lambda: fig_pool_priors(a.evo, a.out),
             "objective_study": lambda: fig_objective_study(a.evo, a.out),
-            "ladder": lambda: fig_ladder(a.evo, a.out, "val"),
-            "froc_ladder": lambda: fig_froc_ladder(a.evo, a.out, "val"),
-            "per_rate": lambda: fig_per_rate(a.evo, a.out, "val"),
-            "comparisons": lambda: fig_comparisons(a.evo, a.out, "val"),
+            "grid_val": lambda: fig_grid(a.evo, a.out, "val"),
             "lambda0": lambda: fig_lambda0(a.evo, a.out),
         }
     else:
         jobs = {
-            "ladder_test": lambda: fig_ladder(a.evo, a.out, "test"),
-            "froc_ladder_test": lambda: fig_froc_ladder(a.evo, a.out, "test"),
+            "grid_test": lambda: fig_grid(a.evo, a.out, "test"),
+            "froc_test": lambda: fig_froc(a.evo, a.out, "test"),
             "per_rate_test": lambda: fig_per_rate(a.evo, a.out, "test"),
-            "comparisons_test": lambda: fig_comparisons(a.evo, a.out, "test"),
+            "factor_pairs_test": lambda: fig_factor_pairs(a.evo, a.out),
+            "strata_test": lambda: fig_strata(a.evo, a.out),
+            "val_vs_test": lambda: fig_val_vs_test(a.evo, a.out),
         }
     for name, fn in jobs.items():
         if a.only and name not in a.only:

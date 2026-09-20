@@ -79,8 +79,9 @@ COMPARISONS = (("FULL", "B2"), ("A1", "B2"), ("A2", "B2"), ("B2", "B1"), ("B1", 
                ("FULL", "A1"))
 
 #: The comparisons the pooled rungs exist to make. ``FULL-P`` vs ``FULL`` holds the architecture
-#: fixed and moves only the objective; ``FULL-P`` vs ``B1-P`` holds the objective fixed and moves
-#: only the set module. Without both, a gain at ``FULL-P`` is unattributable.
+#: fixed and moves only the objective. ``FULL-P`` vs ``B1-P`` holds the objective fixed but moves
+#: TWO switches, the set module and the geometry term (corrected 2026-09-20): the one-switch
+#: pairs are in :mod:`abus_jcr.rescore.factor_grid`. The tuple is kept as evaluated.
 COMPARISONS_POOLED = (("FULL-P", "B2"), ("FULL-P", "FULL"), ("A2-P", "A2"), ("FULL-P", "B1-P"))
 
 #: Against ``B0-rank``, the label-free within-set-rank floor (added 2026-08-29 after [I3.11]
